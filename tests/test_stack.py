@@ -100,6 +100,15 @@ def test_compose_args_adds_override_only_when_present():
     assert str(stack.OVERRIDE) not in base
     assert str(stack.OVERRIDE) in stack.compose_args(True)
     assert base[-2:] == ["--env-file", str(stack.ENV)]
+    full = stack.compose_args(True)
+    assert full[-4:] == ["--env-file", str(stack.ENV), "--env-file", str(stack.ENV_GENERATED)]
+
+
+def test_active_dag_ids_skips_stale():
+    dags = [{"dag_id": "b", "is_stale": False, "bundle_name": "p"}, {"dag_id": "a"},
+            {"dag_id": "gone", "is_stale": True}]
+    assert stack.active_dag_ids(dags) == ["a", "b"]
+    assert stack.active_dags(dags) == {"b": "p", "a": ""}
 
 
 def test_env_value():

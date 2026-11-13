@@ -1,4 +1,4 @@
-"""Local stack control: python -m airflow_platform.stack up|down|status|trigger|wait|logs.
+"""Local stack control: python -m airflow_platform.stack up|down|status|render|trigger|wait|logs.
 
 Every command prints one JSON line last. Docker output goes to logs/ (git-ignored).
 The parsing helpers (parse_ps, parse_mem_mb, status_line) are pure and tested offline.
@@ -17,6 +17,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import yaml
+
+from airflow_platform import projects as registry
+
 ROOT = Path(__file__).resolve().parents[2]
 STACK = ROOT / "stack"
 LOGS = ROOT / "logs"
@@ -24,7 +28,9 @@ PROJECT = "airflow_platform"
 COMPOSE = STACK / "compose.yaml"
 OVERRIDE = STACK / "compose.projects.yaml"
 ENV = STACK / ".env"
+ENV_GENERATED = STACK / ".env.generated"
 ENV_EXAMPLE = STACK / ".env.example"
+REGISTRY = ROOT / "projects" / "projects.yaml"
 WORKLOADS = ROOT / "workloads"
 EXPECTED = ("postgres", "airflow-init", "airflow-apiserver", "airflow-scheduler",
             "airflow-dag-processor", "airflow-triggerer", "docker-proxy")
@@ -37,10 +43,28 @@ DEFAULT_USER = "airflow"  # documented local default (stack/.env.example)
 # ---------- pure helpers ----------
 
 def compose_args(override_exists: bool) -> list[str]:
+    """Base compose call. With the generated override, the generated env file comes too:
+    compose reads every --env-file in order, a later file winning on duplicate names."""
     args = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE)]
     if override_exists:
-        args += ["-f", str(OVERRIDE)]
+        args += ["-f", str(OVERRIDE), "--env-file", str(ENV), "--env-file", str(ENV_GENERATED)]
+        return args
     return args + ["--env-file", str(ENV)]
+
+
+def override_yaml(override: dict) -> str:
+    header = "# GENERATED from the projects registry by `python -m airflow_platform.stack render`; do not edit.\n"
+    return header + yaml.safe_dump(override, sort_keys=False, default_flow_style=False, width=4096)
+
+
+def active_dags(dags: list[dict]) -> dict[str, str]:
+    """{dag_id: bundle_name} from GET /api/v2/dags entries, skipping stale (removed-bundle) DAGs."""
+    return {d["dag_id"]: str(d.get("bundle_name") or "") for d in dags
+            if d.get("dag_id") and not d.get("is_stale", False) and d.get("is_active", True)}
+
+
+def active_dag_ids(dags: list[dict]) -> list[str]:
+    return sorted(active_dags(dags))
 
 
 def _ps_records(text: str) -> list[dict]:
@@ -190,7 +214,7 @@ def ensure_env() -> bool:
 
 
 def _compose() -> list[str]:
-    return compose_args(OVERRIDE.exists())
+    return compose_args(OVERRIDE.exists() and ENV_GENERATED.exists())
 
 
 def build_workloads(timeout: float) -> tuple[bool, list[str], str]:
@@ -204,14 +228,30 @@ def build_workloads(timeout: float) -> tuple[bool, list[str], str]:
     return True, built, ""
 
 
+def render(projects_file: str | Path, target: str = "local") -> dict:
+    """Write stack/.env.generated and stack/compose.projects.yaml from a projects registry."""
+    path = Path(projects_file).resolve()
+    projects = registry.load(path)
+    ENV_GENERATED.write_text(registry.render_env(projects, target), encoding="utf-8", newline="\n")
+    OVERRIDE.write_text(override_yaml(registry.render_compose_override(projects, path.parent, path.name)),
+                        encoding="utf-8", newline="\n")
+    return {"command": "render", "ok": True, "projects": [p.name for p in projects], "target": target,
+            "files": ["stack/.env.generated", "stack/compose.projects.yaml"]}
+
+
+def cmd_render(args) -> dict:
+    return render(args.projects, args.target)
+
+
 def cmd_up(args) -> dict:
     created = ensure_env()
+    rendered = render(args.projects)
     ok, built, err = build_workloads(timeout=args.timeout)
     if not ok:
         return {"command": "up", "ok": False, "env_created": created, "workloads": built, "tail": err}
     code, tail = _logged(_compose() + ["up", "-d", "--build", "--wait"], "stack-up.log", timeout=args.timeout)
-    return {"command": "up", "ok": code == 0, "env_created": created, "workloads": built,
-            "log": "logs/stack-up.log", **({} if code == 0 else {"tail": tail})}
+    return {"command": "up", "ok": code == 0, "env_created": created, "projects": rendered["projects"],
+            "workloads": built, "log": "logs/stack-up.log", **({} if code == 0 else {"tail": tail})}
 
 
 def cmd_down(args) -> dict:
@@ -251,7 +291,29 @@ def cmd_status(args) -> dict:
     version = airflow_version() if running else ""
     line = status_line(services, version, f"http://localhost:{port}", mem_mb(container_names(ps.stdout)))
     line["import_errors"] = import_errors() if services.get("airflow-scheduler") in GOOD else -1
+    line["projects"] = [p.name for p in registry.load(args.projects)]
+    if args.dags:
+        found: dict[str, str] = {}
+        if services.get("airflow-apiserver") in GOOD:
+            try:
+                found = list_dags()
+            except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                line["dags_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        line["dag_ids"] = sorted(found)
+        line["dag_bundles"] = dict(sorted(found.items()))
     return line
+
+
+def list_dags(url: str | None = None) -> dict[str, str]:
+    """Active {dag_id: bundle_name} from GET /api/v2/dags, paged."""
+    api, found, offset, limit = Api(url), {}, 0, 100
+    while True:
+        page = api.call("GET", f"/dags?limit={limit}&offset={offset}")
+        dags = page.get("dags", [])
+        found.update(active_dags(dags))
+        offset += len(dags)
+        if not dags or offset >= int(page.get("total_entries", 0)):
+            return found
 
 
 # ---------- REST API v2 (token from the FAB auth manager's POST /auth/token) ----------
@@ -341,7 +403,12 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("--timeout", type=float, default=1800)
     down = sub.add_parser("down", help="stop the stack (volumes are kept unless --volumes)")
     down.add_argument("--volumes", action="store_true")
-    sub.add_parser("status", help="print one JSON status line")
+    status = sub.add_parser("status", help="print one JSON status line")
+    status.add_argument("--dags", action="store_true", help="add the active DAG ids from the REST API")
+    rend = sub.add_parser("render", help="write stack/.env.generated and stack/compose.projects.yaml")
+    rend.add_argument("--target", choices=("local", "cloud"), default="local")
+    for sp in (up, status, rend):
+        sp.add_argument("--projects", default=str(REGISTRY), help="projects registry (default projects/projects.yaml)")
     trig = sub.add_parser("trigger", help="unpause and trigger a DAG run over the REST API")
     trig.add_argument("dag_id")
     trig.add_argument("--conf", default=None, help="JSON object passed as the run conf")
@@ -356,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
     for sp in (trig, wait, logs):
         sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:$AIRFLOW_PORT)")
     args = p.parse_args(argv)
-    commands = {"up": cmd_up, "down": cmd_down, "status": cmd_status,
+    commands = {"up": cmd_up, "down": cmd_down, "status": cmd_status, "render": cmd_render,
                 "trigger": cmd_trigger, "wait": cmd_wait, "logs": cmd_logs}
     try:
         result = commands[args.command](args)
@@ -367,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
                       "error": result["error"]}
     print(json.dumps(result))
     if args.command == "status":
-        return 0 if result["up"] else 1
+        return 0 if result.get("up") else 1
     if args.command in ("trigger", "logs"):
         return 0 if result.get("state") not in ("error",) else 1
     if args.command == "wait":
