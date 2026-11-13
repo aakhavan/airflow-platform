@@ -97,3 +97,40 @@ The stack is left running for S2: compose project airflow_platform, Airflow 3.3.
 
 - 13 Nov 19:42 (Claude via chat): S2 relock_resume: isolation check: pandas removed from the denylist (it is a google-provider dependency shipped in the official base image, not project code); pip probed via python -m pip (base image PATH guard). Fixture: replaced a log path the secret scanner flagged as high-entropy with a placeholder.
 
+## S2 result
+*Workload pattern (socket proxy, hello workload, trigger and wait), 13 Nov 2026 19:46.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S2`.
+
+| check | ok | detail |
+|---|---|---|
+| docker-proxy service | yes |  |
+| raw socket mounted only once | yes | 1 mounts |
+| DAGs import only airflow/providers/stdlib | yes |  |
+| hello workload exists | yes |  |
+| no secrets in repo files | yes |  |
+| pip list in airflow image | yes | zipp==4.1.0 | zope.event==6.2 | zope.interface==8.6 |
+| no project libraries in airflow image | yes |  |
+| no DAG import errors | yes | 0 |
+| trigger hello_workload | yes | manual__2026-11-13T18:41:12.361785+00:00 |
+| hello_workload run succeeded | yes | {'dag_id': 'hello_workload', 'run_id': 'manual__2026-11-13T18:41:12.361785+00:00', 'state': 'success', 'timed_out': Fals |
+| workload JSON line in task log | yes | :group::Post Execute
+Pushing xcom
+::endgroup::
+{"dag_id": "hello_workload", "run_id": "manual__2026-11-13T18:41:12.36178 |
+| pytest tests | yes | 20 passed in 0.97s |
+| required tests present | yes | 4 found |
+
+Review: S2 matches the prompt, and the passing accept_s2 run is real. The Docker socket is one read-only mount on docker-proxy (tecnativa/docker-socket-proxy:v0.4.1, CONTAINERS/IMAGES/POST, no host port), recorded in NOTES; compose ps shows that service healthy. hello_workload imports only Airflow. The live run succeeded and the workload JSON line is in the task log. trigger and wait print one JSON line; the token stays in memory. Isolation passes after the 13 Nov relock, which dropped pandas and uses python -m pip.
+
+For Amir: Spec section 5 still names pandas on the isolation denylist. The 13 Nov relock removed it, because the official image installs pandas for the google provider, and switched the probe to python -m pip. NOTES Current state still says accept_s2 fails; that sentence is from before the relock. No code change is required.
+
+## Additions for S3
+S3 replaces the repo dags/ bind mount with LocalDagBundle mounts. hello_workload.py is at dags/examples/hello_workload.py and must keep loading. docker-proxy is in stack.EXPECTED, so status.up requires it healthy. The Docker socket stays mounted only on docker-proxy, with CONTAINERS=1, IMAGES=1, POST=1. stack up builds each workloads/<name> image as airflow-platform/<name>:local before compose; those images are not compose services. trigger, wait, and logs already exist. The token is POST /auth/token on the FAB app (the core OpenAPI only has /api/v2/auth/login|logout) and stays unprinted. DAGs start paused, so trigger sends PATCH is_paused false, then POST dagRuns with logical_date null. Inside the Airflow image, pip is python -m pip. pandas stays installed for the google provider and is off the denylist. render_bundles and render_compose_override still raise NotImplementedError. projects.yaml has only examples.
+
+## S3 notes (implementer)
+- `stack render [--projects PATH] [--target local|cloud]` writes `stack/.env.generated` (one single-quoted, literal JSON value) and `stack/compose.projects.yaml`. `up` renders first. `compose_args` adds the override plus both `--env-file`s only when both generated files exist.
+- The override adds, for apiserver, scheduler, dag-processor and triggerer: `<abs posix path>:/opt/airflow/projects/<name>:ro` per project, the registry file at `/opt/airflow/projects/projects.yaml:ro` (for the S4 plugin), and `AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST: ${...:?}`. The repo `dags/` mount is gone.
+- `render_compose_override(projects, registry_dir, registry_file="projects.yaml")`: the extra file name lets a registry with a different file name (the acceptance's `logs/tmp_projects.yaml`) mount correctly.
+- `status --dags` adds `dag_ids` and `dag_bundles` ({dag_id: bundle_name}, stale DAGs skipped); `status` also lists `projects` from the registry.
+

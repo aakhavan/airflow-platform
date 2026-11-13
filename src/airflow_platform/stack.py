@@ -1,4 +1,4 @@
-"""Local stack control: python -m airflow_platform.stack up|down|status|render|trigger|wait|logs.
+"""Local stack control: python -m airflow_platform.stack up|down|status|render|trigger|wait|logs|plugins|links.
 
 Every command prints one JSON line last. Docker output goes to logs/ (git-ignored).
 The parsing helpers (parse_ps, parse_mem_mb, status_line) are pure and tested offline.
@@ -396,6 +396,27 @@ def cmd_logs(args) -> dict:
             "state": str(ti.get("state") or "unknown"), "try_number": tries, "lines": len(lines)}
 
 
+def links_result(payload: dict) -> dict:
+    """The one JSON line `links` prints, from GET .../taskInstances/{task_id}/links (ExtraLinkCollectionResponse)."""
+    return {"links": dict(payload.get("extra_links") or {}), "source": "api"}
+
+
+def cmd_plugins(args) -> dict:
+    """GET /api/v2/plugins, paged; the whole PluginCollectionResponse as one line."""
+    api, plugins, offset = Api(args.url), [], 0
+    while True:
+        page = api.call("GET", f"/plugins?limit=100&offset={offset}")
+        plugins += page.get("plugins", [])
+        offset = len(plugins)
+        if not page.get("plugins") or offset >= int(page.get("total_entries", 0)):
+            return {"plugins": plugins, "total_entries": len(plugins)}
+
+
+def cmd_links(args) -> dict:
+    path = f"/dags/{_q(args.dag_id)}/dagRuns/{_q(args.run_id)}/taskInstances/{_q(args.task_id)}/links"
+    return links_result(Api(args.url).call("GET", path))
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m airflow_platform.stack")
     sub = p.add_subparsers(dest="command", required=True)
@@ -420,11 +441,17 @@ def main(argv: list[str] | None = None) -> int:
     logs.add_argument("dag_id")
     logs.add_argument("run_id")
     logs.add_argument("task_id")
-    for sp in (trig, wait, logs):
+    plug = sub.add_parser("plugins", help="print GET /api/v2/plugins as one JSON line")
+    links = sub.add_parser("links", help="print a task instance's extra links from the REST API")
+    links.add_argument("dag_id")
+    links.add_argument("run_id")
+    links.add_argument("task_id")
+    for sp in (trig, wait, logs, plug, links):
         sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:$AIRFLOW_PORT)")
     args = p.parse_args(argv)
     commands = {"up": cmd_up, "down": cmd_down, "status": cmd_status, "render": cmd_render,
-                "trigger": cmd_trigger, "wait": cmd_wait, "logs": cmd_logs}
+                "trigger": cmd_trigger, "wait": cmd_wait, "logs": cmd_logs, "plugins": cmd_plugins,
+                "links": cmd_links}
     try:
         result = commands[args.command](args)
     except (RuntimeError, OSError, ValueError, KeyError) as exc:
@@ -439,6 +466,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.get("state") not in ("error",) else 1
     if args.command == "wait":
         return 0 if result.get("state") == "success" else 1
+    if args.command in ("plugins", "links"):
+        return 1 if result.get("ok") is False else 0
     return 0 if result.get("ok") else 1
 
 

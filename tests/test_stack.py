@@ -13,6 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
+def test_links_result_from_extra_links_response():
+    payload = {"extra_links": {"Open docs": "http://localhost:8080/docs?run_id=r"}, "total_entries": 1}
+    assert stack.links_result(payload) == {"links": {"Open docs": "http://localhost:8080/docs?run_id=r"},
+                                           "source": "api"}
+    assert stack.links_result({}) == {"links": {}, "source": "api"}
+
+
+def test_plugins_mount_is_read_only():
+    common = yaml.safe_load((ROOT / "stack" / "compose.yaml").read_text(encoding="utf-8"))["x-airflow-common"]
+    assert any(v.endswith(":/opt/airflow/plugins:ro") for v in common["volumes"])
+
+
 def _compose() -> dict:
     return yaml.safe_load((ROOT / "stack" / "compose.yaml").read_text(encoding="utf-8"))
 

@@ -24,7 +24,8 @@
 #   - LOAD_EXAMPLES is false;
 #   - the image is built from ../image and tagged airflow-platform:local;
 #   - the UI port is ${AIRFLOW_PORT:-8080};
-#   - logs and config live in named volumes; plugins is a bind mount from the repo root;
+#   - logs and config live in named volumes; plugins is a read-only bind mount from the repo root
+#     (S4: plugins/project_views builds external views and task links from projects.yaml);
 #   - DAGs come only from DAG bundles (S3): `python -m airflow_platform.stack render` writes
 #     compose.projects.yaml (read-only project mounts under /opt/airflow/projects) and .env.generated
 #     (AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST); `stack up` renders and passes both;
@@ -68,7 +69,7 @@ x-airflow-common:
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-..}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-..}/plugins:/opt/airflow/plugins:ro
     - airflow-logs:/opt/airflow/logs
     - airflow-config:/opt/airflow/config
   user: "${AIRFLOW_UID:-50000}:0"
