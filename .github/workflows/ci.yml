@@ -1,0 +1,66 @@
+# CI (docs/spec.md §11). No secrets and no cloud credentials: nothing here references any.
+# Reproduce the stack job locally, next to the dev stack: pwsh scripts/ci-local.ps1
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Sync (locked)
+        run: uv sync --frozen
+      - name: Tests (offline)
+        run: uv run pytest -q
+
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - name: Up (examples project only)
+        run: ./scripts/up.ps1 -Projects projects/ci.yaml
+      - name: No DAG import errors
+        run: |
+          $line = uv run python -m airflow_platform.stack status --projects projects/ci.yaml | Select-Object -Last 1
+          Write-Host $line
+          $status = $line | ConvertFrom-Json
+          if (-not $status.up) { throw 'stack is not up' }
+          if ($status.import_errors -ne 0) { throw "import_errors = $($status.import_errors)" }
+      - name: Trigger hello_workload
+        id: trigger
+        run: |
+          $line = uv run python -m airflow_platform.stack trigger hello_workload | Select-Object -Last 1
+          Write-Host $line
+          if ($LASTEXITCODE -ne 0) { throw 'trigger failed' }
+          "run_id=$(($line | ConvertFrom-Json).run_id)" >> $env:GITHUB_OUTPUT
+      - name: Wait for success
+        env:
+          RUN_ID: ${{ steps.trigger.outputs.run_id }}
+        run: |
+          uv run python -m airflow_platform.stack wait hello_workload $env:RUN_ID --timeout 300
+          if ($LASTEXITCODE -ne 0) { throw 'hello_workload did not succeed' }
+      - name: Compose logs
+        if: failure()
+        run: uv run python -m airflow_platform.stack compose-logs
+      - name: Upload compose logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: logs/
+          if-no-files-found: ignore
+      - name: Down (with volumes)
+        if: always()
+        run: ./scripts/down.ps1 -Volumes

@@ -1,12 +1,17 @@
-"""Local stack control: python -m airflow_platform.stack up|down|status|render|trigger|wait|logs|plugins|links.
+"""Local stack control: python -m airflow_platform.stack
+up|down|status|render|trigger|wait|logs|plugins|links|compose-logs.
 
 Every command prints one JSON line last. Docker output goes to logs/ (git-ignored).
+Every subcommand takes --compose-project (default airflow_platform, the dev stack) and --port (default
+AIRFLOW_PORT from stack/.env, else 8080), so a second stack (scripts/ci-local.ps1: airflow_platform_ci on 8081)
+runs next to the dev stack without touching it.
 The parsing helpers (parse_ps, parse_mem_mb, status_line) are pure and tested offline.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -24,7 +29,9 @@ from airflow_platform import projects as registry
 ROOT = Path(__file__).resolve().parents[2]
 STACK = ROOT / "stack"
 LOGS = ROOT / "logs"
-PROJECT = "airflow_platform"
+PROJECT = "airflow_platform"  # the dev stack's compose project
+DEFAULT_PORT = "8080"
+PROJECT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")  # docker compose project-name rule
 COMPOSE = STACK / "compose.yaml"
 OVERRIDE = STACK / "compose.projects.yaml"
 ENV = STACK / ".env"
@@ -42,14 +49,51 @@ DEFAULT_USER = "airflow"  # documented local default (stack/.env.example)
 
 # ---------- pure helpers ----------
 
-def compose_args(override_exists: bool) -> list[str]:
+def generated_paths(project: str = PROJECT) -> tuple[Path, Path]:
+    """(env file, compose override) that `render` writes for a compose project. The dev project keeps
+    stack/.env.generated and stack/compose.projects.yaml; any other project (CI) gets its own pair under
+    logs/<project>/ (git-ignored), so rendering another registry never changes the dev stack's files."""
+    if project == PROJECT:
+        return ENV_GENERATED, OVERRIDE
+    folder = LOGS / project
+    return folder / ".env.generated", folder / "compose.projects.yaml"
+
+
+def compose_args(override_exists: bool, project: str = PROJECT) -> list[str]:
     """Base compose call. With the generated override, the generated env file comes too:
     compose reads every --env-file in order, a later file winning on duplicate names."""
-    args = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE)]
+    env_generated, override = generated_paths(project)
+    args = ["docker", "compose", "-p", project, "-f", str(COMPOSE)]
     if override_exists:
-        args += ["-f", str(OVERRIDE), "--env-file", str(ENV), "--env-file", str(ENV_GENERATED)]
+        args += ["-f", str(override), "--env-file", str(ENV), "--env-file", str(env_generated)]
         return args
     return args + ["--env-file", str(ENV)]
+
+
+def resolve_port(cli_port: int | None, env_text: str) -> str:
+    """--port wins; else AIRFLOW_PORT from stack/.env (quotes stripped); else 8080."""
+    if cli_port:
+        return str(int(cli_port))
+    return env_value(env_text, "AIRFLOW_PORT", DEFAULT_PORT).strip("\"'") or DEFAULT_PORT
+
+
+def compose_env(port: str, base: dict | None = None) -> dict:
+    """Process env for docker compose. AIRFLOW_PORT here beats the --env-file value (the shell env wins)."""
+    env = dict(os.environ if base is None else base)
+    env["AIRFLOW_PORT"] = str(port)
+    return env
+
+
+def log_name(base: str, project: str = PROJECT) -> str:
+    """<base>.log for the dev project, <base>-<project>.log for any other."""
+    return f"{base}.log" if project == PROJECT else f"{base}-{project}.log"
+
+
+def compose_project(value: str) -> str:
+    """argparse type for --compose-project."""
+    if not PROJECT_NAME.match(value or ""):
+        raise argparse.ArgumentTypeError(f"invalid compose project name {value!r} (lowercase letters, digits, _ and -)")
+    return value
 
 
 def override_yaml(override: dict) -> str:
@@ -186,10 +230,20 @@ def count_import_errors(text: str) -> int:
 
 # ---------- side effects ----------
 
+class Target:
+    """The stack this process talks to: compose project and host port. Set once in main()."""
+    project: str = PROJECT
+    port: int | None = None  # None: AIRFLOW_PORT from stack/.env, else 8080
+
+
+def _port() -> str:
+    return resolve_port(Target.port, ENV.read_text(encoding="utf-8") if ENV.exists() else "")
+
+
 def _run(args: list[str], timeout: float = 120) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout)
+                              errors="replace", timeout=timeout, env=compose_env(_port()))
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, -9, "", f"timeout after {timeout}s")
     except OSError as exc:
@@ -214,7 +268,8 @@ def ensure_env() -> bool:
 
 
 def _compose() -> list[str]:
-    return compose_args(OVERRIDE.exists() and ENV_GENERATED.exists())
+    env_generated, override = generated_paths(Target.project)
+    return compose_args(override.exists() and env_generated.exists(), Target.project)
 
 
 def build_workloads(timeout: float) -> tuple[bool, list[str], str]:
@@ -232,11 +287,14 @@ def render(projects_file: str | Path, target: str = "local") -> dict:
     """Write stack/.env.generated and stack/compose.projects.yaml from a projects registry."""
     path = Path(projects_file).resolve()
     projects = registry.load(path)
-    ENV_GENERATED.write_text(registry.render_env(projects, target), encoding="utf-8", newline="\n")
-    OVERRIDE.write_text(override_yaml(registry.render_compose_override(projects, path.parent, path.name)),
+    env_generated, override = generated_paths(Target.project)
+    env_generated.parent.mkdir(parents=True, exist_ok=True)
+    env_generated.write_text(registry.render_env(projects, target), encoding="utf-8", newline="\n")
+    override.write_text(override_yaml(registry.render_compose_override(projects, path.parent, path.name)),
                         encoding="utf-8", newline="\n")
     return {"command": "render", "ok": True, "projects": [p.name for p in projects], "target": target,
-            "files": ["stack/.env.generated", "stack/compose.projects.yaml"]}
+            "compose_project": Target.project,
+            "files": [f.relative_to(ROOT).as_posix() for f in (env_generated, override)]}
 
 
 def cmd_render(args) -> dict:
@@ -249,17 +307,30 @@ def cmd_up(args) -> dict:
     ok, built, err = build_workloads(timeout=args.timeout)
     if not ok:
         return {"command": "up", "ok": False, "env_created": created, "workloads": built, "tail": err}
-    code, tail = _logged(_compose() + ["up", "-d", "--build", "--wait"], "stack-up.log", timeout=args.timeout)
+    log = log_name("stack-up", Target.project)
+    code, tail = _logged(_compose() + ["up", "-d", "--build", "--wait"], log, timeout=args.timeout)
     return {"command": "up", "ok": code == 0, "env_created": created, "projects": rendered["projects"],
-            "workloads": built, "log": "logs/stack-up.log", **({} if code == 0 else {"tail": tail})}
+            "compose_project": Target.project, "url": f"http://localhost:{_port()}",
+            "workloads": built, "log": f"logs/{log}", **({} if code == 0 else {"tail": tail})}
 
 
 def cmd_down(args) -> dict:
     ensure_env()
     extra = ["--volumes"] if args.volumes else []
-    code, tail = _logged(_compose() + ["down", *extra], "stack-down.log", timeout=300)
-    return {"command": "down", "ok": code == 0, "volumes_removed": bool(args.volumes),
-            **({} if code == 0 else {"tail": tail})}
+    code, tail = _logged(_compose() + ["down", *extra], log_name("stack-down", Target.project), timeout=300)
+    return {"command": "down", "ok": code == 0, "compose_project": Target.project,
+            "volumes_removed": bool(args.volumes), **({} if code == 0 else {"tail": tail})}
+
+
+def cmd_compose_logs(args) -> dict:
+    """`docker compose logs` of every service into logs/compose-<project>.log (the CI failure artifact)."""
+    ensure_env()
+    LOGS.mkdir(exist_ok=True)
+    log = LOGS / f"compose-{Target.project}.log"
+    r = _run(_compose() + ["logs", "--no-color", "--timestamps"], timeout=300)
+    log.write_text((r.stdout or "") + (r.stderr or ""), encoding="utf-8")
+    return {"command": "compose-logs", "ok": r.returncode == 0, "compose_project": Target.project,
+            "log": log.relative_to(ROOT).as_posix()}
 
 
 def airflow_version() -> str:
@@ -284,12 +355,13 @@ def import_errors() -> int:
 
 def cmd_status(args) -> dict:
     ensure_env()
-    port = env_value(ENV.read_text(encoding="utf-8"), "AIRFLOW_PORT", "8080")
+    port = _port()
     ps = _run(_compose() + ["ps", "-a", "--format", "json"], timeout=60)
     services = parse_ps(ps.stdout) if ps.returncode == 0 else {}
     running = any(v != "ok" and not v.startswith("exited") for v in services.values())
     version = airflow_version() if running else ""
     line = status_line(services, version, f"http://localhost:{port}", mem_mb(container_names(ps.stdout)))
+    line["compose_project"] = Target.project
     line["import_errors"] = import_errors() if services.get("airflow-scheduler") in GOOD else -1
     line["projects"] = [p.name for p in registry.load(args.projects)]
     if args.dags:
@@ -321,8 +393,7 @@ def list_dags(url: str | None = None) -> dict[str, str]:
 def base_url(url: str | None = None) -> str:
     if url:
         return url.rstrip("/")
-    env_text = ENV.read_text(encoding="utf-8") if ENV.exists() else ""
-    return f"http://localhost:{env_value(env_text, 'AIRFLOW_PORT', '8080')}"
+    return f"http://localhost:{_port()}"
 
 
 def _credentials() -> tuple[str, str]:
@@ -447,11 +518,18 @@ def main(argv: list[str] | None = None) -> int:
     links.add_argument("run_id")
     links.add_argument("task_id")
     for sp in (trig, wait, logs, plug, links):
-        sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:$AIRFLOW_PORT)")
+        sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:<port>)")
+    clogs = sub.add_parser("compose-logs", help="write `docker compose logs` to logs/compose-<project>.log")
+    for sp in (up, down, status, rend, trig, wait, logs, plug, links, clogs):
+        sp.add_argument("--compose-project", type=compose_project, default=PROJECT,
+                        help=f"docker compose project (default {PROJECT}, the dev stack)")
+        sp.add_argument("--port", type=int, default=None,
+                        help=f"host UI / REST API port (default AIRFLOW_PORT from stack/.env, else {DEFAULT_PORT})")
     args = p.parse_args(argv)
+    Target.project, Target.port = args.compose_project, args.port
     commands = {"up": cmd_up, "down": cmd_down, "status": cmd_status, "render": cmd_render,
                 "trigger": cmd_trigger, "wait": cmd_wait, "logs": cmd_logs, "plugins": cmd_plugins,
-                "links": cmd_links}
+                "links": cmd_links, "compose-logs": cmd_compose_logs}
     try:
         result = commands[args.command](args)
     except (RuntimeError, OSError, ValueError, KeyError) as exc:

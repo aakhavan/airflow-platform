@@ -8,6 +8,19 @@ import yaml
 from airflow_platform import projects
 
 ROOT = Path(__file__).resolve().parents[1]
+# projects/projects.yaml points governor at the ../governor-airflow worktree, which a CI runner does not have.
+HAS_GOVERNOR = (ROOT.parent / "governor-airflow" / "airflow" / "dags").is_dir()
+
+
+def _repo_registry_names() -> list[str]:
+    """Project names the repo's own registry loads; without the governor worktree, check that it fails on
+    governor only (CI uses projects/ci.yaml instead)."""
+    path = ROOT / "projects" / "projects.yaml"
+    if HAS_GOVERNOR:
+        return [b["name"] for b in projects.render_bundles(projects.load(path))]
+    errors = projects.validate(yaml.safe_load(path.read_text(encoding="utf-8")), base_dir=path.parent)
+    assert len(errors) == 1 and "'governor'" in errors[0] and "dags.local" in errors[0]
+    return ["examples", "governor"]
 
 
 def _write(tmp_path: Path, raw: dict) -> Path:
@@ -20,10 +33,11 @@ def _write(tmp_path: Path, raw: dict) -> Path:
 
 
 def test_load_valid_registry(tmp_path):
-    # The repo's own registry loads.
-    repo = projects.load(ROOT / "projects" / "projects.yaml")
-    assert [p.name for p in repo] == ["examples", "governor"]
-    assert repo[0].dags.local == (ROOT / "dags" / "examples").resolve()
+    # The repo's own registry loads (with the governor worktree present).
+    assert _repo_registry_names() == ["examples", "governor"]
+    if HAS_GOVERNOR:
+        repo = projects.load(ROOT / "projects" / "projects.yaml")
+        assert repo[0].dags.local == (ROOT / "dags" / "examples").resolve()
 
     # A full entry with view and task_link loads into dataclasses.
     f = _write(tmp_path, {"projects": [
@@ -122,8 +136,7 @@ def test_render_local_bundle_per_project(tmp_path):
     assert key == "AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST"
     assert value[0] == value[-1] == "'" and json.loads(value[1:-1]) == bundles
     # The repo's own registry renders the examples and governor bundles.
-    repo = projects.render_bundles(projects.load(ROOT / "projects" / "projects.yaml"))
-    assert [b["name"] for b in repo] == ["examples", "governor"]
+    assert _repo_registry_names() == ["examples", "governor"]
 
 
 def test_render_cloud_uses_git_bundle_and_skips_local_only(tmp_path):

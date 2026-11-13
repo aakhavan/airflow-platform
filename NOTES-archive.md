@@ -174,3 +174,44 @@ S4 adds the project views plugin. The registry is already mounted read-only at /
 - `projects.yaml`: `examples` now has `view` (Examples, http://localhost:8080/docs) and `task_link` (Open docs, `...docs?run_id={run_id}`, prefix `hello_`). S5 replaces this with governor's entry.
 - Live, 13 Nov: `accept_s4` passed. The plugin is loaded with 2 views and 1 global link. The hello_workload run's link is `http://localhost:8080/docs?run_id=manual__2026-11-13T19%3A14%3A22.354427%2B00%3A00`. 36 tests pass. The stack is left up on the real registry.
 
+## S4 result
+*Project views plugin (external views and task links), 13 Nov 2026 20:18.*
+
+Implementer `claude-tc-opus`; reviewers `claude-tc-fable`: pass; 0 fix loop(s); branch `factory/S4`.
+
+| check | ok | detail |
+|---|---|---|
+| plugin exists | yes |  |
+| plugin has no fastapi_apps | yes |  |
+| plugin has no react_apps | yes |  |
+| plugin has no flask | yes |  |
+| plugin has no appbuilder | yes |  |
+| plugin uses global_operator_extra_links | yes |  |
+| no secrets in repo files | yes |  |
+| stack up with plugin | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples"], "workloads": ["airflow-platform/hello:loca |
+| stack plugins prints JSON | yes | {"plugins": [{"name": "OpenLineageProviderPlugin", "macros": [], "flask_blueprints": [], "fastapi_apps": [], "fastapi_ro |
+| project_views plugin loaded | yes | {"plugins": [{"name": "OpenLineageProviderPlugin", "macros": [], "flask_blueprints": [], "fastapi_apps": [], "fastapi_ro |
+| examples nav view registered | yes | {"plugins": [{"name": "OpenLineageProviderPlugin", "macros": [], "flask_blueprints": [], "fastapi_apps": [], "fastapi_ro |
+| trigger hello_workload | yes | manual__2026-11-13T19:16:37.574698+00:00 |
+| hello_workload run succeeded | yes | {'dag_id': 'hello_workload', 'run_id': 'manual__2026-11-13T19:16:37.574698+00:00', 'state': 'success', 'timed_out': Fals |
+| task link resolves for the run | yes | {'links': {'Open docs': 'http://localhost:8080/docs?run_id=manual__2026-11-13T19%3A16%3A37.574698%2B00%3A00'}, 'source': |
+| pytest tests | yes | 36 passed in 0.45s |
+| required tests present | yes | 7 found |
+
+Review: S4 delivers the project_views plugin (external_views nav+dag tab, one BaseOperatorLink per task_link via global_operator_extra_links), a pure views.py with an AST-verified copy in the plugin, a read-only plugins mount, projects.yaml view/task_link on examples, and stack plugins/links commands. Imports are stdlib+yaml+airflow only; a broken registry logs one warning and registers nothing; links use only run_id/dag_id/task_id, are quoted, and are empty for other DAGs. The per-DAG tab finding is recorded honestly. Acceptance passed live with the link resolved via the REST API.
+
+For Amir: The docs fetch was denied again, so the 3.3 plugin facts in NOTES come from the live server's /openapi.json rather than the docs text; they were confirmed working live. The acceptance's 'nav view registered' check only greps for the href, so it would not catch a wrong destination; unit tests cover that.
+
+## Additions for S5
+S5 replaces the examples view/task_link in projects/projects.yaml with governor's entry (view http://localhost:8501, task_link url_template with {run_id}, dag_prefix governor_). The plugin reads /opt/airflow/projects/projects.yaml inside the container, validates only name/view/task_link (no host path checks), and builds views at import time, so a registry change needs a stack restart to show up. url_template may use only run_id, dag_id and task_id; anything else makes the whole plugin register nothing with one warning. The dag tab appears on every DAG (3.3 has no per-DAG filter key). Link class names are ProjectTaskLink_<name> with non-alphanumerics replaced by underscores. plugins/ is mounted :ro on all Airflow services; airflow-init's chown on it is harmless. stack plugins and stack links <dag> <run> <task> exist; links returns {'links': {...}, 'source': 'api'}. plugins/, src/airflow_platform/views.py and tests/test_views.py are untracked and must be git-added with the S4 commit.
+
+## S5 notes (implementer)
+- `projects.yaml`: examples' S4 placeholder view/link removed; `governor` added as §6 (worktree path, documented `git` entry, view `http://localhost:8501`, link `http://localhost:8501/Profiles?run_id={run_id}`, prefix `governor_`). The path `/Profiles` comes from A1's `apps/streamlit/pages/4_Profiles.py`, which reads `st.query_params.get("run_id")`.
+- `stack/.env.example`: the 7 `AIRFLOW_VAR_*` the DAG reads (`docker_url`, `governor_data_volume`, `governor_pg_host/port/db`, `governor_build_user/password`), with defaults from governor's `testbed/README.md` and `testbed/apply_roles.py` (`governor_build_local`).
+- `stack/.env` existed and was byte-identical to the old `.env.example` (checked with `cmp`, never read), so I deleted it and `stack up` recreated it with the new lines. The runbook tells users with an edited `.env` to copy the lines across.
+- Tests: new `tests/test_governor.py` (3 required tests; the page-name sub-check skips when `../governor-airflow` is absent). `test_projects.py` now expects `["examples", "governor"]`. 39 passed. Note for S6: `projects.load` on the repo registry checks that `../../governor-airflow/airflow/dags` exists, so the two repo-registry assertions in `test_projects.py` will fail in CI without the worktree.
+- Live, 13 Nov: `stack up` is ok, `status --dags` lists `governor_profile_raw` (bundle governor) and 0 import errors, and the plugin registers both 8501 views plus `ProjectTaskLink_governor`.
+
+## S5 blocked: preconditions
+`accept_s5` fails only its preconditions: the governor api (8000/health) and ui (8501/_stcore/health) are not running. The worktree, `governor:local` and the test bed on 55432 are fine. The live part (trigger, profile file, link 200) did not run. I may not start governor containers, so that is for Amir: `docker compose up -d --wait` in `../governor-airflow`, then rerun `uv run python plan/accept/accept_s5.py`.
+

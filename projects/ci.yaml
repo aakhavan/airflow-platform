@@ -1,0 +1,5 @@
+# CI registry (docs/spec.md §11): the examples project only. Other projects' DAG folders live in
+# sibling repos that do not exist on a CI runner. Used by .github/workflows/ci.yml and scripts/ci-local.ps1.
+projects:
+  - name: examples
+    dags: {local: ../dags/examples}
