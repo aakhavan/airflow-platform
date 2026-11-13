@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 NAME_RE = re.compile(r"^[a-z0-9-]+$")
-ALLOWED_PLACEHOLDERS = frozenset({"run_id", "dag_id", "task_id"})
+ALLOWED_PLACEHOLDERS = frozenset({"run_id", "run_id_safe", "dag_id", "task_id"})
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ def validate(raw: Any, base_dir: str | Path | None = None) -> list[str]:
                         if bad:
                             errors.append(
                                 f"{label}: field 'task_link.url_template' has unknown placeholder(s) "
-                                f"{bad}; allowed: {{run_id}}, {{dag_id}}, {{task_id}}"
+                                f"{bad}; allowed: {{run_id}}, {{run_id_safe}}, {{dag_id}}, {{task_id}}"
                             )
                 prefix = link.get("dag_prefix")
                 if not isinstance(prefix, str) or not prefix.strip():

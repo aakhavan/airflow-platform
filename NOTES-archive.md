@@ -134,3 +134,43 @@ S3 replaces the repo dags/ bind mount with LocalDagBundle mounts. hello_workload
 - `render_compose_override(projects, registry_dir, registry_file="projects.yaml")`: the extra file name lets a registry with a different file name (the acceptance's `logs/tmp_projects.yaml`) mount correctly.
 - `status --dags` adds `dag_ids` and `dag_bundles` ({dag_id: bundle_name}, stale DAGs skipped); `status` also lists `projects` from the registry.
 
+## Relocks
+- 13 Nov 2026 21:07: S5 .env.example quoting + S10 README secrets section (Claude via chat) (changed: plan/prompts/S10.md)
+- 13 Nov 2026 21:40: verdict_stop fix: {run_id_safe} placeholder so the task link matches the profile file stem; runbook --dsn + worktree .env; accept_s5 checks the stem in the link (via supervise, by Claude via chat (delegated by Amir)) (changed: plan.yaml, plan/accept/accept_s5.py, plan/prompts/S5.md)
+
+## S3 result
+*projects.yaml to DAG bundles and the compose override, 13 Nov 2026 20:08.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S3`.
+
+| check | ok | detail |
+|---|---|---|
+| generated files ignored | yes |  |
+| S2 temporary dags mount removed | yes |  |
+| no secrets in repo files | yes |  |
+| stack up with bundles | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples"], "workloads": ["airflow-platform/hello:loca |
+| trigger hello_workload | yes | manual__2026-11-13T18:58:26.717366+00:00 |
+| hello_workload run succeeded | yes | {'dag_id': 'hello_workload', 'run_id': 'manual__2026-11-13T18:58:26.717366+00:00', 'state': 'success', 'timed_out': Fals |
+| up with a third project | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples", "tmp-project"], "workloads": ["airflow-plat |
+| new project's DAG loaded | yes |  |
+| back to the real registry | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples"], "workloads": ["airflow-platform/hello:loca |
+| registry file untouched by the test | yes |  |
+| pytest tests | yes | 25 passed in 0.34s |
+| required tests present | yes | 5 found |
+
+Review: S3 matches the prompt, and accept_s3's pass is a real stack run. up.ps1 calls stack up, which renders git-ignored stack/.env.generated and stack/compose.projects.yaml and passes both env files to compose. LocalDagBundle classpath and path were confirmed on Airflow 3.3.2 (hello_workload, bundle examples). Git kwargs are recorded and unit-tested only. Mounts are :ro on apiserver, scheduler, dag-processor, and triggerer. The S2 dags mount is gone. A third project outside the repo loaded with no code change.
+
+For Amir: The docs fetch was denied in the implementer session. LocalDagBundle was checked on the running 3.3.2 server, not only from memory. GitDagBundle kwargs were not checked against the provider source. accept_s3.py treats the new DAG as loaded when its id appears; it does not assert bundle_name tmp-project. The probe DAG lives only under logs/tmp_project, so the mount and bundle config did run.
+
+## Additions for S4
+S4 adds the project views plugin. The registry is already mounted read-only at /opt/airflow/projects/projects.yaml on airflow-apiserver, airflow-scheduler, airflow-dag-processor, and airflow-triggerer. plugins/ is already bind-mounted at /opt/airflow/plugins from the repo, but that mount is writable; the S4 prompt asks for read-only. Do not pip-install the host package into the image. Copy the views logic into the plugin; yaml is already in the Airflow image. examples in projects.yaml has no view or task_link yet; the live check adds both, aimed at http://localhost:8080/docs. Trigger hello_workload (bundle examples, task hello). DAGs are paused at creation; stack trigger unpauses. status --dags returns dag_ids and dag_bundles from GET /api/v2/dags, skipping stale DAGs. The auth token is POST /auth/token on the FAB app and must stay unprinted. On a bad projects.yaml the plugin logs one warning and registers nothing. Record the 3.3 external_views keys, whether a dag tab can be limited, the get_link signature, and the plugins route. Set AIRFLOW__CORE__LAZY_LOAD_PLUGINS false only if the docs say UI plugins need it. Git bundles are not live. The stack is left up on the real registry.
+
+## S4 notes (implementer)
+- `src/airflow_platform/views.py` (pure, stdlib): `registry_errors`, `views_for`, `link_for` (+ `_get`, which reads dicts or `projects.Project`). The functions between the COPY markers are copied verbatim into `plugins/project_views/__init__.py`; `test_plugin_copy_matches_views_module` compares them by AST source segment.
+- Per project with a `view`: a nav entry (`category: browse`, `url_route: <name>`) and a dag tab (`url_route: <name>-dag`). Both set `url_route`, so the UI iframes the page. Per project with a `task_link`: one `ProjectTaskLink_<name>` in `global_operator_extra_links`; it returns `""` for DAGs outside `dag_prefix`.
+- The plugin reads `PLATFORM_PROJECTS_FILE` or `/opt/airflow/projects/projects.yaml`. It does no host-path checks, because those paths don't exist in the container. On any read or validation error it logs one warning and registers nothing.
+- `plugins/` is mounted `:ro` on every Airflow service. airflow-init's `chown -R /opt/airflow` can't change it; that does not fail init, and `up` passed.
+- `stack plugins` prints the paged `GET /api/v2/plugins` as one line. `stack links <dag> <run> <task>` prints `{"links": {...}, "source": "api"}`.
+- `projects.yaml`: `examples` now has `view` (Examples, http://localhost:8080/docs) and `task_link` (Open docs, `...docs?run_id={run_id}`, prefix `hello_`). S5 replaces this with governor's entry.
+- Live, 13 Nov: `accept_s4` passed. The plugin is loaded with 2 views and 1 global link. The hello_workload run's link is `http://localhost:8080/docs?run_id=manual__2026-11-13T19%3A14%3A22.354427%2B00%3A00`. 36 tests pass. The stack is left up on the real registry.
+

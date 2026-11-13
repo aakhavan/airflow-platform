@@ -48,7 +48,7 @@ def registry_errors(raw):
             except ValueError as exc:
                 errors.append(f"project '{p['name']}': field 'task_link.url_template' is malformed: {exc}")
                 continue
-            if fields - {"run_id", "dag_id", "task_id"}:
+            if fields - {"run_id", "run_id_safe", "dag_id", "task_id"}:
                 errors.append(f"project '{p['name']}': field 'task_link.url_template' has unknown placeholders")
     return errors
 
@@ -76,7 +76,7 @@ def link_for(project, dag_id, run_id, task_id):
     if not prefix or not str(dag_id).startswith(prefix):
         return ""
     q = lambda v: urllib.parse.quote(str(v), safe="")  # noqa: E731
-    return _get(link, "url_template").format(dag_id=q(dag_id), run_id=q(run_id), task_id=q(task_id))
+    return _get(link, "url_template").format(dag_id=q(dag_id), run_id=q(run_id), run_id_safe=q(run_id.replace(":", "_")), task_id=q(task_id))
 
 
 # --- COPY END -----------------------------------------------------------------------------

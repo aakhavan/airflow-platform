@@ -1,7 +1,15 @@
 # Registry of projects (docs/spec.md §6). Paths are relative to this file, with forward slashes.
+# A registry change shows up in Airflow after `python -m airflow_platform.stack up` (the plugin reads it at import).
 projects:
   - name: examples
     dags: {local: ../dags/examples}
-    # S4 live check: a page that exists (the API docs). S5 replaces this with governor's entry.
-    view: {label: Examples, url: "http://localhost:8080/docs"}
-    task_link: {label: "Open docs", url_template: "http://localhost:8080/docs?run_id={run_id}", dag_prefix: "hello_"}
+  - name: governor
+    dags:
+      # The governor worktree (branch airflow-integration) until it is merged;
+      # after the merge this becomes ../../governor/airflow/dags
+      local: ../../governor-airflow/airflow/dags
+      # Cloud only: documented, rendered with `render --target cloud`, not enabled locally.
+      git: {repo_url: "https://github.com/aakhavan/governor", subdir: airflow/dags, tracking_ref: main}
+    view: {label: Governor, url: "http://localhost:8501"}
+    # Streamlit serves apps/streamlit/pages/4_Profiles.py at /Profiles; the page reads st.query_params["run_id"].
+    task_link: {label: "Open report", url_template: "http://localhost:8501/Profiles?run_id={run_id_safe}", dag_prefix: "governor_"}

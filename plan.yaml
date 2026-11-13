@@ -59,7 +59,7 @@ steps:
     tier: design
     prompt: plan/prompts/S5.md
     accept: plan/accept/accept_s5.py
-    allowed_paths: [projects/projects.yaml, stack/.env.example, docs/projects/, README.md, tests/]
+    allowed_paths: [projects/projects.yaml, stack/.env.example, docs/projects/, docs/spec.md, plugins/project_views/, src/airflow_platform/, README.md, tests/]
     human_gate: true
     reviewer: [claude-tc-fable, cursor-grok]
     review_focus: "nothing in ../governor or ../governor-airflow is changed; the governor DAG runs as a container through the proxy; the password reaches the container only through Airflow Variables/connection rendered at run time; the report link opens the run's profile; runbook is followable from a clean laptop"

@@ -142,3 +142,14 @@ def test_plugin_registers_views_and_links(stub_airflow, monkeypatch, tmp_path):
     assert link.get_link(None, ti_key=key) == "http://g/?r=a%3Ab"
     key.dag_id = "hello_workload"
     assert link.get_link(None, ti_key=key) == ""
+
+
+def test_link_for_run_id_safe():
+    proj = {**GOV, "task_link": {**GOV["task_link"],
+            "url_template": "http://localhost:8501/Profiles?run_id={run_id_safe}"}}
+    url = views.link_for(proj, "governor_profile_raw", "manual__2026-11-13T20:14:31+00:00", "profile")
+    assert url == "http://localhost:8501/Profiles?run_id=" + views.link_for(
+        {**proj, "task_link": {**proj["task_link"], "url_template": "{run_id_safe}"}},
+        "governor_profile_raw", "manual__2026-11-13T20:14:31+00:00", "profile")
+    assert ":" not in url.split("run_id=", 1)[1]
+    assert "manual__2026-11-13T20_14_31" in url

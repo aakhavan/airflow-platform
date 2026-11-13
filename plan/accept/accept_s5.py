@@ -1,5 +1,6 @@
 """S5 acceptance: governor runs as a project end to end (manual profile DAG, report reachable)."""
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -42,6 +43,8 @@ def live():
     l, r = stack("links", "governor_profile_raw", res["run_id"], "profile", timeout=120)
     url = next((v for v in ((l or {}).get("links") or {}).values() if "8501" in str(v)), "")
     check("task link points at the governor UI", bool(url), str(l or tail(r))[:200])
+    stem = fname[:-5]
+    check("task link carries the profile's file-safe run id", bool(url) and stem in urllib.parse.unquote(url), url[:200])
     if url:
         check("report link answers 200", http_status(url) == 200, url)
 
@@ -52,5 +55,6 @@ if guarded(preconditions):
 else:
     guarded(static)
 guarded(pytest_check, "tests", ["test_registry_has_governor_with_view_and_link", "test_governor_link_targets_profiles_page",
-                                "test_env_example_has_no_values_beyond_documented_defaults"])
+                                "test_env_example_has_no_values_beyond_documented_defaults",
+                                "test_link_for_run_id_safe"])
 finish("S5")

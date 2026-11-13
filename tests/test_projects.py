@@ -22,7 +22,7 @@ def _write(tmp_path: Path, raw: dict) -> Path:
 def test_load_valid_registry(tmp_path):
     # The repo's own registry loads.
     repo = projects.load(ROOT / "projects" / "projects.yaml")
-    assert [p.name for p in repo] == ["examples"]
+    assert [p.name for p in repo] == ["examples", "governor"]
     assert repo[0].dags.local == (ROOT / "dags" / "examples").resolve()
 
     # A full entry with view and task_link loads into dataclasses.
@@ -121,9 +121,9 @@ def test_render_local_bundle_per_project(tmp_path):
     key, value = line.split("=", 1)
     assert key == "AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST"
     assert value[0] == value[-1] == "'" and json.loads(value[1:-1]) == bundles
-    # The repo's own registry renders the examples bundle.
+    # The repo's own registry renders the examples and governor bundles.
     repo = projects.render_bundles(projects.load(ROOT / "projects" / "projects.yaml"))
-    assert [b["name"] for b in repo] == ["examples"]
+    assert [b["name"] for b in repo] == ["examples", "governor"]
 
 
 def test_render_cloud_uses_git_bundle_and_skips_local_only(tmp_path):

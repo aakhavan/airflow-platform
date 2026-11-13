@@ -100,10 +100,10 @@ projects:
       local: ../../governor-airflow/airflow/dags   # the worktree until the branch is merged, then ../../governor/airflow/dags
       git: {repo_url: "https://github.com/aakhavan/governor", subdir: airflow/dags, tracking_ref: main}   # cloud; documented, not enabled
     view: {label: Governor, url: "http://localhost:8501"}
-    task_link: {label: "Open report", url_template: "http://localhost:8501/Profiles?run_id={run_id}", dag_prefix: "governor_"}
+    task_link: {label: "Open report", url_template: "http://localhost:8501/Profiles?run_id={run_id_safe}", dag_prefix: "governor_"}
 ```
 
-- `projects.py` validates the file: unique names, existing local paths, `url_template` containing only `{run_id}`, `{dag_id}` and `{task_id}`. Errors name the project and the field.
+- `projects.py` validates the file: unique names, existing local paths, `url_template` containing only `{run_id}`, `{run_id_safe}` (the run id with `:` replaced by `_`, the form projects use for file names), `{dag_id}` and `{task_id}`. Errors name the project and the field.
 - It renders two things from it:
   1. `AIRFLOW__DAG_PROCESSOR__DAG_BUNDLE_CONFIG_LIST`: one `LocalDagBundle` per project, with path `/opt/airflow/projects/<name>`, written into `stack/.env.generated` (git-ignored). Verify the class path and the kwargs against the 3.3 docs.
   2. `stack/compose.projects.yaml`: a read-only bind mount per project into the dag-processor, scheduler and triggerer (and anywhere else the 3.3 docs say bundles are read).
