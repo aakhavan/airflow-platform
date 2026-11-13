@@ -1,0 +1,6 @@
+.factory/
+logs/
+.env
+.env.*
+!.env.example
+.venv/

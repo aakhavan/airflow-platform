@@ -1,0 +1,106 @@
+# airflow-platform S0-S10 (A1 runs separately in the governor worktree, see docs/spec.md §8). Spec: docs/spec.md. Locked with `factory lock`.
+project: airflow-platform
+notes: NOTES.md
+agents: AGENTS.md
+defaults:
+  max_fix_loops: 2
+  timeout_min: 60              # S1 pulls the Airflow image (~1.5 GB)
+  run_budget_usd: 60
+  step_budget_usd: 15
+  review_budget_usd: {design: 2.0, mechanical: 0.75}
+# Implementer: Turing Opus. Reviewer: Grok by default; Fable on S4/S5/S9 (step overrides). Reviewer != implementer.
+roles:
+  design:     {implementer: [claude-tc-opus, cursor-grok], reviewer: [cursor-grok, claude-tc-fable]}
+  mechanical: {implementer: [claude-tc-opus, cursor-grok], reviewer: [cursor-grok, claude-tc-fable]}
+steps:
+  - id: S0
+    title: Scaffold, uv tooling and the projects loader skeleton
+    tier: mechanical
+    prompt: plan/prompts/S0.md
+    accept: plan/accept/accept_s0.py
+    allowed_paths: [pyproject.toml, uv.lock, .gitignore, .gitattributes, .pre-commit-config.yaml, src/airflow_platform/, tests/, projects/, README.md]
+    human_gate: false
+    review_focus: "pyproject has no apache-airflow; .gitignore covers .env, .env.*, !.env.example, stack/.env.generated, stack/compose.projects.yaml, logs/, *.tfstate*, .terraform/, .factory/; projects.py is pure and its errors name the project and field"
+  - id: S1
+    title: Airflow image and the lean local stack
+    tier: design
+    prompt: plan/prompts/S1.md
+    accept: plan/accept/accept_s1.py
+    allowed_paths: [image/, stack/, src/airflow_platform/, scripts/up.ps1, scripts/down.ps1, scripts/status.ps1, tests/, README.md]
+    human_gate: false
+    review_focus: "the compose file is the official 3.3.x file trimmed as spec §4 says (source URL and date recorded); providers installed only through the constraints URL; LocalExecutor; no redis/worker/flower; healthchecks on every service; only documented local defaults in .env.example"
+  - id: S2
+    title: Workload pattern (socket proxy, hello workload, trigger and wait)
+    tier: design
+    prompt: plan/prompts/S2.md
+    accept: plan/accept/accept_s2.py
+    allowed_paths: [stack/, workloads/, dags/examples/, src/airflow_platform/, image/requirements.txt, tests/, README.md]
+    human_gate: false
+    review_focus: "the raw docker socket is mounted only into the proxy, never into an Airflow service; proxy sections are the minimum that worked and are recorded; DAG files import only airflow/providers/stdlib; trigger/wait print one JSON line and never print the token"
+  - id: S3
+    title: projects.yaml to DAG bundles and the compose override
+    tier: design
+    prompt: plan/prompts/S3.md
+    accept: plan/accept/accept_s3.py
+    allowed_paths: [src/airflow_platform/, projects/, stack/compose.yaml, scripts/up.ps1, tests/, README.md]
+    human_gate: false
+    review_focus: "generated files are git-ignored and rendered by up.ps1; bundle class path and kwargs match the 3.3 docs (finding recorded); mounts are read-only; adding a project needs no code change"
+  - id: S4
+    title: Project views plugin (external views and task links)
+    tier: design
+    prompt: plan/prompts/S4.md
+    accept: plan/accept/accept_s4.py
+    allowed_paths: [plugins/, src/airflow_platform/, stack/compose.yaml, projects/, tests/, README.md]
+    human_gate: false
+    reviewer: [claude-tc-fable, cursor-grok]
+    review_focus: "no fastapi_apps, react_apps or flask; plugin imports only stdlib + yaml + airflow; a broken projects.yaml logs one warning and registers nothing; links are built from url_template with only run_id/dag_id/task_id and are empty for other DAGs; per-DAG tab filtering finding is recorded honestly"
+  - id: S5
+    title: Governor as the first project, end to end
+    tier: design
+    prompt: plan/prompts/S5.md
+    accept: plan/accept/accept_s5.py
+    allowed_paths: [projects/projects.yaml, stack/.env.example, docs/projects/, README.md, tests/]
+    human_gate: true
+    reviewer: [claude-tc-fable, cursor-grok]
+    review_focus: "nothing in ../governor or ../governor-airflow is changed; the governor DAG runs as a container through the proxy; the password reaches the container only through Airflow Variables/connection rendered at run time; the report link opens the run's profile; runbook is followable from a clean laptop"
+  - id: S6
+    title: CI for python and the local stack
+    tier: mechanical
+    prompt: plan/prompts/S6.md
+    accept: plan/accept/accept_s6.py
+    allowed_paths: [.github/, scripts/, tests/, README.md]
+    human_gate: false
+    review_focus: "actions pinned by major version or SHA; no secrets referenced; the stack job proves import-error-free DAGs and one successful hello_workload run, then tears down"
+  - id: S7
+    title: Terraform module for AWS, tested with mock providers
+    tier: design
+    prompt: plan/prompts/S7.md
+    accept: plan/accept/accept_s7.py
+    allowed_paths: [terraform/modules/airflow-vm-aws/, terraform/templates/, terraform/envs/aws/, stack/versions.yaml, tests/, README.md]
+    human_gate: false
+    review_focus: "no ingress at all; IMDSv2 required; role can read only its own secret slots; slots have no versions; TTL wiring correct; registry behind enable_registry=false; no tfvars or backend committed; cloud-init never receives a secret value from Terraform"
+  - id: S8
+    title: Terraform module for GCP, tested with mock providers
+    tier: design
+    prompt: plan/prompts/S8.md
+    accept: plan/accept/accept_s8.py
+    allowed_paths: [terraform/modules/airflow-vm-gcp/, terraform/templates/, terraform/envs/gcp/, stack/versions.yaml, tests/, README.md]
+    human_gate: false
+    review_focus: "firewall allows only the IAP range; SA has secretAccessor on its own slots only; max_run_duration + DELETE when ttl > 0; Shielded VM; registry behind a flag; shares the cloud-init template with AWS without cloud-specific forks beyond the secret fetch"
+  - id: S9
+    title: Operator scripts and the terraform CI job
+    tier: design
+    prompt: plan/prompts/S9.md
+    accept: plan/accept/accept_s9.py
+    allowed_paths: [scripts/, .github/workflows/, terraform/envs/, docs/runbook.md, tests/, README.md]
+    human_gate: false
+    reviewer: [claude-tc-fable, cursor-grok]
+    review_focus: "smoke.ps1 destroys in finally and verifies nothing tagged is left; refuses on existing state without -Force; asks before apply; -WhatIf makes zero cloud calls; no script prints secret values; remote-state.ps1 makes a private versioned bucket"
+  - id: S10
+    title: README, architecture diagram and the learning page
+    tier: mechanical
+    prompt: plan/prompts/S10.md
+    accept: plan/accept/accept_s10.py
+    allowed_paths: [README.md, docs/, .github/workflows/, LICENSE]
+    human_gate: true
+    review_focus: "README lets a stranger run up.ps1 and the hello DAG; states what is tested vs what was smoke-tested; Kubernetes named as future target; learning page explains each design choice in plain English"
