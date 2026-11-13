@@ -3,4 +3,10 @@ logs/
 .env
 .env.*
 !.env.example
+stack/.env.generated
+stack/compose.projects.yaml
+*.tfstate*
+.terraform/
+# .terraform.lock.hcl is kept (committed) on purpose
 .venv/
+__pycache__/

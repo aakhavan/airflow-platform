@@ -1,0 +1,4 @@
+# Registry of projects (docs/spec.md §6). Paths are relative to this file, with forward slashes.
+projects:
+  - name: examples
+    dags: {local: ../dags/examples}

@@ -18,7 +18,7 @@ steps:
     tier: mechanical
     prompt: plan/prompts/S0.md
     accept: plan/accept/accept_s0.py
-    allowed_paths: [pyproject.toml, uv.lock, .gitignore, .gitattributes, .pre-commit-config.yaml, src/airflow_platform/, tests/, projects/, README.md]
+    allowed_paths: [pyproject.toml, uv.lock, .gitignore, .gitattributes, .pre-commit-config.yaml, src/airflow_platform/, tests/, projects/, dags/, README.md]
     human_gate: false
     review_focus: "pyproject has no apache-airflow; .gitignore covers .env, .env.*, !.env.example, stack/.env.generated, stack/compose.projects.yaml, logs/, *.tfstate*, .terraform/, .factory/; projects.py is pure and its errors name the project and field"
   - id: S1
@@ -68,7 +68,7 @@ steps:
     tier: mechanical
     prompt: plan/prompts/S6.md
     accept: plan/accept/accept_s6.py
-    allowed_paths: [.github/, scripts/, tests/, README.md]
+    allowed_paths: [.github/, scripts/, src/airflow_platform/, projects/ci.yaml, tests/, README.md]
     human_gate: false
     review_focus: "actions pinned by major version or SHA; no secrets referenced; the stack job proves import-error-free DAGs and one successful hello_workload run, then tears down"
   - id: S7
@@ -92,7 +92,7 @@ steps:
     tier: design
     prompt: plan/prompts/S9.md
     accept: plan/accept/accept_s9.py
-    allowed_paths: [scripts/, .github/workflows/, terraform/envs/, docs/runbook.md, tests/, README.md]
+    allowed_paths: [scripts/, .github/workflows/, terraform/envs/, src/airflow_platform/, docs/runbook.md, tests/, README.md]
     human_gate: false
     reviewer: [claude-tc-fable, cursor-grok]
     review_focus: "smoke.ps1 destroys in finally and verifies nothing tagged is left; refuses on existing state without -Force; asks before apply; -WhatIf makes zero cloud calls; no script prints secret values; remote-state.ps1 makes a private versioned bucket"
