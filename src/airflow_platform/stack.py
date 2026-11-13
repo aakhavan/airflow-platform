@@ -1,4 +1,4 @@
-"""Local stack control: python -m airflow_platform.stack up|down|status.
+"""Local stack control: python -m airflow_platform.stack up|down|status|trigger|wait|logs.
 
 Every command prints one JSON line last. Docker output goes to logs/ (git-ignored).
 The parsing helpers (parse_ps, parse_mem_mb, status_line) are pure and tested offline.
@@ -11,6 +11,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,10 +25,13 @@ COMPOSE = STACK / "compose.yaml"
 OVERRIDE = STACK / "compose.projects.yaml"
 ENV = STACK / ".env"
 ENV_EXAMPLE = STACK / ".env.example"
+WORKLOADS = ROOT / "workloads"
 EXPECTED = ("postgres", "airflow-init", "airflow-apiserver", "airflow-scheduler",
-            "airflow-dag-processor", "airflow-triggerer")
+            "airflow-dag-processor", "airflow-triggerer", "docker-proxy")
 ONE_SHOT = ("airflow-init",)
 GOOD = ("healthy", "ok")
+TERMINAL = ("success", "failed")
+DEFAULT_USER = "airflow"  # documented local default (stack/.env.example)
 
 
 # ---------- pure helpers ----------
@@ -92,6 +99,67 @@ def env_value(env_text: str, name: str, default: str) -> str:
     return default
 
 
+def workload_images(workloads_dir: Path) -> list[tuple[str, Path]]:
+    """(tag, context) for every workloads/<name>/Dockerfile: airflow-platform/<name>:local."""
+    if not workloads_dir.is_dir():
+        return []
+    return [(f"airflow-platform/{d.name}:local", d) for d in sorted(workloads_dir.iterdir())
+            if (d / "Dockerfile").is_file()]
+
+
+def trigger_payload(conf: dict | None = None) -> dict:
+    """Body of POST /api/v2/dags/{dag_id}/dagRuns (3.x: logical_date may be null, the id is server-made)."""
+    return {"logical_date": None, "conf": dict(conf or {})}
+
+
+def run_result(dag_id: str, payload: dict) -> dict:
+    """The one JSON line trigger/wait print, from a DAGRunResponse."""
+    return {"dag_id": payload.get("dag_id", dag_id), "run_id": payload.get("dag_run_id", ""),
+            "state": str(payload.get("state") or "unknown")}
+
+
+def is_terminal(state: str) -> bool:
+    return state in TERMINAL
+
+
+def try_number(ti_payload: dict) -> int:
+    """Latest try of a task instance (at least 1)."""
+    return max(int(ti_payload.get("try_number") or 1), 1)
+
+
+def log_lines(payload: dict) -> list[str]:
+    """Text lines of a task-log response: content is a list of structured messages (3.x) or a string."""
+    content = payload.get("content", "")
+    if isinstance(content, str):
+        return content.splitlines()
+    lines = []
+    for item in content or []:
+        if isinstance(item, dict):
+            text = str(item.get("event", ""))
+            lines.extend(text.splitlines() or [""])
+        else:
+            lines.extend(str(item).splitlines())
+    return lines
+
+
+def count_import_errors(text: str) -> int:
+    """`airflow dags list-import-errors -o json` prints a JSON list (or a 'no errors' message)."""
+    data = None
+    for start in ("[", "{"):
+        i = (text or "").find(start)
+        if i >= 0:
+            try:
+                data = json.loads(text[i:])
+                break
+            except json.JSONDecodeError:
+                continue
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return len(data.get("import_errors", []))
+    return 0
+
+
 # ---------- side effects ----------
 
 def _run(args: list[str], timeout: float = 120) -> subprocess.CompletedProcess:
@@ -125,11 +193,25 @@ def _compose() -> list[str]:
     return compose_args(OVERRIDE.exists())
 
 
+def build_workloads(timeout: float) -> tuple[bool, list[str], str]:
+    """docker build every workloads/<name> image; output in logs/workload-<name>.log."""
+    built = []
+    for tag, ctx in workload_images(WORKLOADS):
+        code, tail = _logged(["docker", "build", "-t", tag, str(ctx)], f"workload-{ctx.name}.log", timeout)
+        if code != 0:
+            return False, built, f"{tag}: {tail}"
+        built.append(tag)
+    return True, built, ""
+
+
 def cmd_up(args) -> dict:
     created = ensure_env()
+    ok, built, err = build_workloads(timeout=args.timeout)
+    if not ok:
+        return {"command": "up", "ok": False, "env_created": created, "workloads": built, "tail": err}
     code, tail = _logged(_compose() + ["up", "-d", "--build", "--wait"], "stack-up.log", timeout=args.timeout)
-    return {"command": "up", "ok": code == 0, "env_created": created, "log": "logs/stack-up.log",
-            **({} if code == 0 else {"tail": tail})}
+    return {"command": "up", "ok": code == 0, "env_created": created, "workloads": built,
+            "log": "logs/stack-up.log", **({} if code == 0 else {"tail": tail})}
 
 
 def cmd_down(args) -> dict:
@@ -153,6 +235,13 @@ def mem_mb(names: list[str]) -> int:
     return parse_mem_mb(r.stdout) if r.returncode == 0 else 0
 
 
+def import_errors() -> int:
+    """Number of DAG import errors (-1 when the CLI could not be asked)."""
+    r = _run(_compose() + ["exec", "-T", "airflow-scheduler", "airflow", "dags", "list-import-errors",
+                           "-o", "json"], timeout=120)
+    return count_import_errors(r.stdout) if r.returncode == 0 else -1
+
+
 def cmd_status(args) -> dict:
     ensure_env()
     port = env_value(ENV.read_text(encoding="utf-8"), "AIRFLOW_PORT", "8080")
@@ -160,7 +249,89 @@ def cmd_status(args) -> dict:
     services = parse_ps(ps.stdout) if ps.returncode == 0 else {}
     running = any(v != "ok" and not v.startswith("exited") for v in services.values())
     version = airflow_version() if running else ""
-    return status_line(services, version, f"http://localhost:{port}", mem_mb(container_names(ps.stdout)))
+    line = status_line(services, version, f"http://localhost:{port}", mem_mb(container_names(ps.stdout)))
+    line["import_errors"] = import_errors() if services.get("airflow-scheduler") in GOOD else -1
+    return line
+
+
+# ---------- REST API v2 (token from the FAB auth manager's POST /auth/token) ----------
+
+def base_url(url: str | None = None) -> str:
+    if url:
+        return url.rstrip("/")
+    env_text = ENV.read_text(encoding="utf-8") if ENV.exists() else ""
+    return f"http://localhost:{env_value(env_text, 'AIRFLOW_PORT', '8080')}"
+
+
+def _credentials() -> tuple[str, str]:
+    env_text = ENV.read_text(encoding="utf-8") if ENV.exists() else ""
+    return (env_value(env_text, "_AIRFLOW_WWW_USER_USERNAME", DEFAULT_USER),
+            env_value(env_text, "_AIRFLOW_WWW_USER_PASSWORD", DEFAULT_USER))
+
+
+def _http(method: str, url: str, body: dict | None = None, token: str | None = None,
+          timeout: float = 30) -> dict:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:200]
+        raise RuntimeError(f"{method} {urllib.parse.urlsplit(url).path} -> {exc.code}: {detail}") from None
+    return json.loads(raw) if raw.strip() else {}
+
+
+class Api:
+    """Tiny REST API v2 client. The token lives only in this object."""
+
+    def __init__(self, url: str | None = None):
+        self.url = base_url(url)
+        user, password = _credentials()
+        self._token = _http("POST", f"{self.url}/auth/token", {"username": user, "password": password})["access_token"]
+
+    def call(self, method: str, path: str, body: dict | None = None) -> dict:
+        return _http(method, f"{self.url}/api/v2{path}", body, self._token)
+
+
+def _q(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def cmd_trigger(args) -> dict:
+    conf = json.loads(args.conf) if args.conf else {}
+    api = Api(args.url)
+    dag = _q(args.dag_id)
+    api.call("PATCH", f"/dags/{dag}", {"is_paused": False})  # DAGs are paused at creation
+    return run_result(args.dag_id, api.call("POST", f"/dags/{dag}/dagRuns", trigger_payload(conf)))
+
+
+def cmd_wait(args) -> dict:
+    api = Api(args.url)
+    path = f"/dags/{_q(args.dag_id)}/dagRuns/{_q(args.run_id)}"
+    deadline = time.monotonic() + args.timeout
+    while True:
+        result = run_result(args.dag_id, api.call("GET", path))
+        if is_terminal(result["state"]) or time.monotonic() >= deadline:
+            return {**result, "timed_out": not is_terminal(result["state"])}
+        time.sleep(3)
+
+
+def cmd_logs(args) -> dict:
+    api = Api(args.url)
+    ti_path = f"/dags/{_q(args.dag_id)}/dagRuns/{_q(args.run_id)}/taskInstances/{_q(args.task_id)}"
+    ti = api.call("GET", ti_path)
+    tries = try_number(ti)
+    lines = log_lines(api.call("GET", f"{ti_path}/logs/{tries}?full_content=true"))
+    for line in lines[-20:]:
+        print(line)
+    return {"dag_id": args.dag_id, "run_id": args.run_id, "task_id": args.task_id,
+            "state": str(ti.get("state") or "unknown"), "try_number": tries, "lines": len(lines)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -171,11 +342,36 @@ def main(argv: list[str] | None = None) -> int:
     down = sub.add_parser("down", help="stop the stack (volumes are kept unless --volumes)")
     down.add_argument("--volumes", action="store_true")
     sub.add_parser("status", help="print one JSON status line")
+    trig = sub.add_parser("trigger", help="unpause and trigger a DAG run over the REST API")
+    trig.add_argument("dag_id")
+    trig.add_argument("--conf", default=None, help="JSON object passed as the run conf")
+    wait = sub.add_parser("wait", help="poll a DAG run until it succeeds or fails")
+    wait.add_argument("dag_id")
+    wait.add_argument("run_id")
+    wait.add_argument("--timeout", type=float, default=300)
+    logs = sub.add_parser("logs", help="print the last 20 lines of a task log")
+    logs.add_argument("dag_id")
+    logs.add_argument("run_id")
+    logs.add_argument("task_id")
+    for sp in (trig, wait, logs):
+        sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:$AIRFLOW_PORT)")
     args = p.parse_args(argv)
-    result = {"up": cmd_up, "down": cmd_down, "status": cmd_status}[args.command](args)
+    commands = {"up": cmd_up, "down": cmd_down, "status": cmd_status,
+                "trigger": cmd_trigger, "wait": cmd_wait, "logs": cmd_logs}
+    try:
+        result = commands[args.command](args)
+    except (RuntimeError, OSError, ValueError, KeyError) as exc:
+        result = {"command": args.command, "ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+        if args.command in ("trigger", "wait", "logs"):
+            result = {"dag_id": args.dag_id, "run_id": getattr(args, "run_id", ""), "state": "error",
+                      "error": result["error"]}
     print(json.dumps(result))
     if args.command == "status":
         return 0 if result["up"] else 1
+    if args.command in ("trigger", "logs"):
+        return 0 if result.get("state") not in ("error",) else 1
+    if args.command == "wait":
+        return 0 if result.get("state") == "success" else 1
     return 0 if result.get("ok") else 1
 
 

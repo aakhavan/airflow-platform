@@ -25,6 +25,7 @@
 #   - the image is built from ../image and tagged airflow-platform:local;
 #   - the UI port is ${AIRFLOW_PORT:-8080};
 #   - logs and config live in named volumes; dags and plugins are bind mounts from the repo root;
+#   - docker-proxy (S2) gives DockerOperator a filtered Docker API; no Airflow service mounts the socket;
 #   - every service has a healthcheck (airflow-init is one-shot: its check is trivial and
 #     `up --wait` relies on service_completed_successfully).
 #
@@ -86,6 +87,26 @@ services:
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # Docker API for DockerOperator (docs/spec.md section 5). The only service that sees the host
+  # socket, read-only; Airflow reaches it at tcp://docker-proxy:2375 on the compose network.
+  # No host port. Sections: see NOTES.md (S2 result).
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.1
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+      SOCKET_PATH: /run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2375/_ping || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 5
       start_period: 5s
     restart: always

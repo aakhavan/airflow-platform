@@ -10,6 +10,9 @@ compose_source:
 images:
   airflow: airflow-platform:local
   postgres: postgres:16
+  docker_proxy: tecnativa/docker-socket-proxy:v0.4.1
+  workload_base: python:3.12.12-slim
+  hello: airflow-platform/hello:local
 providers:                    # pinned by the constraints file above
   apache-airflow-providers-docker: 4.5.9
   apache-airflow-providers-standard: 1.19.0

@@ -19,7 +19,7 @@ def static():
 
 
 def thin_image():
-    r = docker("run", "--rm", "--entrypoint", "pip", "airflow-platform:local", "list", "--format=freeze")
+    r = docker("run", "--rm", "--entrypoint", "python", "airflow-platform:local", "-m", "pip", "list", "--format=freeze")
     if not check("pip list in airflow image", r.returncode == 0, tail(r)):
         return
     names = {l.split("==")[0].lower() for l in r.stdout.splitlines()}

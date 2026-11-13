@@ -41,7 +41,7 @@ def test_every_service_has_healthcheck():
 def test_executor_is_local():
     c = _compose()
     for name, svc in c["services"].items():
-        if name == "postgres":
+        if name in ("postgres", "docker-proxy"):
             continue
         env = _common_env(svc)
         assert env["AIRFLOW__CORE__EXECUTOR"] == "LocalExecutor", name

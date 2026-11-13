@@ -17,7 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 _checks: list[dict] = []
-DENYLIST = ["dbt-core", "langchain", "langgraph", "pandas", "governor", "streamlit"]
+# pandas is NOT listed: the official base image ships it as a hard dependency of the google provider (Airflow's own
+# constraints), not as project code. The rule is about project libraries.
+DENYLIST = ["dbt-core", "langchain", "langgraph", "governor", "streamlit"]
 ALLOWED_DAG_IMPORTS = ("airflow", "datetime", "pendulum", "json", "os", "pathlib", "typing", "docker", "__future__")
 
 

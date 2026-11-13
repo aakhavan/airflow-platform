@@ -3,4 +3,5 @@
 {"Service": "airflow-init", "Name": "airflow_platform-airflow-init-1", "State": "exited", "Health": "", "ExitCode": 0, "Status": "Exited (0) About a minute ago", "Image": "airflow-platform:local"}
 {"Service": "airflow-scheduler", "Name": "airflow_platform-airflow-scheduler-1", "State": "running", "Health": "healthy", "ExitCode": 0, "Status": "Up About a minute (healthy)", "Image": "airflow-platform:local"}
 {"Service": "airflow-triggerer", "Name": "airflow_platform-airflow-triggerer-1", "State": "running", "Health": "healthy", "ExitCode": 0, "Status": "Up About a minute (healthy)", "Image": "airflow-platform:local"}
-{"Service": "postgres", "Name": "airflow_platform-postgres-1", "State": "running", "Health": "healthy", "ExitCode": 0, "Status": "Up 2 minutes (healthy)", "Image": "postgres:16"}
+{"Service": "docker-proxy", "Name": "airflow_platform-docker-proxy-1", "State": "running", "Health": "healthy", "ExitCode": 0, "Status": "Up 2 minutes (healthy)", "Image": "tecnativa/docker-socket-proxy:v0.4.1"}
+{"Service": "postgres", "Name": "airflow_platform-postgres-1", "State": "running", "Health": "healthy", "ExitCode": 0, "Status": "Up 21 minutes (healthy)", "Image": "postgres:16"}
