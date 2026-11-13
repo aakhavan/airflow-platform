@@ -1,0 +1,27 @@
+# Every image tag, provider and tool version in use by the local stack.
+airflow:
+  version: 3.3.2              # latest 3.3.x patch on PyPI, 2026-11-13 (3.4.0 exists; the plan pins 3.3.x)
+  base_image: apache/airflow:3.3.2-python3.12
+  constraints_url: https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt
+  auth_manager: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+compose_source:
+  url: https://airflow.apache.org/docs/apache-airflow/3.3.2/docker-compose.yaml
+  downloaded: 2026-11-13
+images:
+  airflow: airflow-platform:local
+  postgres: postgres:16
+providers:                    # pinned by the constraints file above
+  apache-airflow-providers-docker: 4.5.9
+  apache-airflow-providers-standard: 1.19.0
+  apache-airflow-providers-git: 0.5.0
+  apache-airflow-providers-amazon: 9.36.0
+  apache-airflow-providers-google: 22.5.0
+  apache-airflow-providers-fab: 3.9.0   # preinstalled in the base image; the auth manager
+# Measured 2026-11-13 on Docker Desktop (docker image ls: 3.23GB; docker image inspect .Size: 3078 MiB).
+# All five providers are already preinstalled in the base image at these exact versions, so the
+# provider layer adds only ~5 MB. Amazon and google are not what makes the image heavy, and a
+# CLOUD_PROVIDERS build switch would save nothing; the size is the official base image.
+image_size:
+  local_mb: 3078
+  provider_layer_mb: 5
+  idle_stack_mem_mb: 1231     # docker stats --no-stream, six services, 2026-11-13

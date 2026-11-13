@@ -1,0 +1,7 @@
+# Providers only, unpinned: the official constraints file pins them (see image/Dockerfile).
+# Never add project libraries here (ADR 0001, thin orchestrator).
+apache-airflow-providers-docker
+apache-airflow-providers-standard
+apache-airflow-providers-git
+apache-airflow-providers-amazon
+apache-airflow-providers-google
