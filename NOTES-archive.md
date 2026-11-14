@@ -335,3 +335,73 @@ S8 reuses terraform/templates/cloud-init.yaml.tftpl. Pass secret_prefix (extra v
 - Not done here (S9 or a human): enabling the compute, secretmanager, iap and artifactregistry APIs, and granting the human `iap.tunnelResourceAccessor`. `tunnel_command` output: `gcloud compute start-iap-tunnel <name> 8080 --local-host-port=localhost:8080 --zone <zone> --project <project>`.
 - Tests: `tests/test_terraform.py` now covers both modules (template wiring and version pins parametrized per cloud, same env shape) plus `test_gcp_module_has_no_external_ip_block` and `test_gcp_module_wiring`. pytest 74 passed. `terraform test`: GCP 4 passed (defaults, ttl_and_registry, no_nat, rejects_small_machine), AWS 3 passed.
 
+## S8 result
+*Terraform module for GCP, tested with mock providers, 14 Nov 2026 02:03.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S8`.
+
+| check | ok | detail |
+|---|---|---|
+| IAP range only | yes |  |
+| no external IP | yes |  |
+| TTL scheduling | yes |  |
+| Shielded VM | yes |  |
+| registry behind enable_registry | yes |  |
+| no secret versions created | yes |  |
+| one shared cloud-init template | yes |  |
+| no secrets in repo files | yes |  |
+| terraform fmt | yes |  |
+| init terraform/modules/airflow-vm-gcp | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/modules/airflow-vm-gcp | yes | Success! The configuration is valid. |
+| init terraform/envs/gcp | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/envs/gcp | yes | Success! The configuration is valid. |
+| terraform test terraform/modules/airflow-vm-gcp | yes | tests/main.tftest.hcl... pass |  | Success! 4 passed, 0 failed. |
+| terraform/modules/airflow-vm-gcp has a test file | yes |  |
+| terraform fmt | yes |  |
+| init terraform/modules/airflow-vm-aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/modules/airflow-vm-aws | yes | Success! The configuration is valid. |
+| init terraform/envs/aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/envs/aws | yes | Success! The configuration is valid. |
+| terraform test terraform/modules/airflow-vm-aws | yes | tests/main.tftest.hcl... pass |  | Success! 3 passed, 0 failed. |
+| terraform/modules/airflow-vm-aws has a test file | yes |  |
+| pytest tests | yes | 74 passed in 0.65s |
+| required tests present | yes | 1 found |
+
+Review: S8 matches the prompt and spec §9. terraform test: 4 mock plans passed; pytest 74 passed. Firewall sources are only 35.235.240.0/20 on tcp 22/8080 to the instance tag; no access_config; Shielded VM on; secretAccessor per slot on this SA only; no secret version. ttl>0 sets max_run_duration and DELETE (5400s at 90). Registry count follows enable_registry (default false). One shared cloud-init, cloud=gcp, slots name-KEY. google ~> 7.0 locked 7.46.2.
+
+For Amir: On network=default, default-allow-ssh still allows tcp/22 from 0.0.0.0/0 to every instance; this module only adds an IAP allow, so port 22 stays open and port 8080 does not. accept_s8.py fails if main.tf contains 0.0.0.0/0, so a deny rule cannot be added in this step. Plan asserts check the secretAccessor role and secret id; main.tf binds the module service account. Cloud NAT uses ALL_SUBNETWORKS in the region. The provider changelog was not fetched; validate against GA provider 7.46.2 passed.
+
+## Additions for S9
+S9 adds plan.ps1, smoke.ps1, tunnel.ps1 and remote-state.ps1, each with -Target aws|gcp and -WhatIf, and never printing secret values, plus the terraform CI job (fmt, init -backend=false, validate, tflint, terraform test; no cloud credentials). GCP output tunnel_command is: gcloud compute start-iap-tunnel <name> 8080 --local-host-port=localhost:8080 --zone <zone> --project <project>. The module does not enable compute, secretmanager, iap or artifactregistry, and does not grant the caller iap.tunnelResourceAccessor. Secret ids are <name>-<KEY>; add versions by hand after apply. create_nat defaults to true and covers every subnet in the region; set false when a NAT is already there. A positive ttl_minutes deletes the VM via max_run_duration and cloud-init also schedules shutdown -h +N first. enable_registry defaults false. name must be 6-28 lowercase characters (it is the service account id). envs/gcp has no backend; remote-state.ps1 writes backend.tf. OS Login is enabled and project-wide SSH keys are blocked. Keep terraform/templates/cloud-init.yaml.tftpl shared. Terraform is not on PATH; use docker image hashicorp/terraform:1.13. Pins: ~> 1.13.0 and hashicorp/google ~> 7.0 locked at 7.46.2. The default network's default-allow-ssh still admits tcp/22 from 0.0.0.0/0; the UI is the IAP allow on tcp/8080.
+
+## S9 result
+*Operator scripts and the terraform CI job, 14 Nov 2026 02:15.*
+
+Implementer `claude-tc-opus`; reviewers `claude-tc-fable`: pass; 0 fix loop(s); branch `factory/S9`.
+
+| check | ok | detail |
+|---|---|---|
+| smoke destroys in finally | yes |  |
+| smoke checks for leftovers | yes |  |
+| terraform job in CI | yes |  |
+| runbook exists | yes |  |
+| no secrets in repo files | yes |  |
+| plan.ps1 aws -WhatIf | yes | What if: Performing the operation "Create Directory" on target "Destination: C:\Users\amir0\portfolio\airflow-platform\l |
+| plan.ps1 gcp -WhatIf | yes | What if: Performing the operation "Create Directory" on target "Destination: C:\Users\amir0\portfolio\airflow-platform\l |
+| smoke.ps1 aws -WhatIf | yes | What if: Performing the operation "run" on target "aws ec2 describe-instances --region eu-central-1 --filters Name=tag:N |
+| smoke.ps1 gcp -WhatIf | yes | What if: Performing the operation "run" on target "gcloud compute instances list --project <project_id> --filter=name=ai |
+| tunnel.ps1 aws -WhatIf | yes | tunnel.ps1: aws VM port 8080 -> http://localhost:8080 | What if: Performing the operation "run" on target "terraform out |
+| remote-state.ps1 gcp -WhatIf | yes | Reminder: committing terraform/envs/gcp/backend.tf is Amir's choice. It holds only the bucket name; | without it, every  |
+| zero cloud-changing calls under -WhatIf | yes |  |
+| pytest tests | yes | 95 passed in 0.71s |
+| required tests present | yes | 4 found |
+
+Review: S9 delivers the four operator scripts plus shared helpers, the terraform CI job, runbook, and stack status --url. Every cloud/Terraform call is ShouldProcess-guarded; the stub recorder saw zero calls under -WhatIf. smoke.ps1 destroys in finally with the smoke vars, then checks AWS Name-tagged / GCP named instances (both set by the modules) and fails loudly. It refuses on existing state without -Force and asks y/N before apply. remote-state.ps1 creates a private, versioned, encrypted bucket. No script prints a secret value. Real (non-WhatIf) paths are untested by design.
+
+For Amir: Before the first real smoke run: use PowerShell 7.2+ (the scripts rely on utf8NoBOM, -AsHashtable and PS7 stderr handling), set the budget alerts, and try -Target gcp on a throwaway project first. Also decide on .gitignore for terraform.tfvars / backend.tf, since two existing tests fail while those files sit on disk.
+
+## Open questions (S9)
+- tflint was not run locally (only Docker and Terraform through the stack module are allowed here). The CI job pins `setup-tflint@v4` with `tflint_version: v0.58.0` and runs it with no `.tflint.hcl`, so the default terraform ruleset applies. The first CI run is the real check, and `fmt`/`validate`/`test` passed in S7/S8 with the same files.
+- The whole smoke.ps1, plan.ps1, tunnel.ps1 and remote-state.ps1 path was run only with -WhatIf. The real CLI flags (`s3api create-bucket --object-ownership`, `gcloud storage buckets update --versioning --public-access-prevention`, `ssm describe-instance-information`) come from the CLI docs as known and have not been run.
+- `.gitignore` has no `*.tfvars` or `*.tfplan` rule. `test_no_tfvars_committed` and `test_no_backend_block_in_envs` check the disk, so a local `terraform.tfvars` or the `backend.tf` that remote-state.ps1 writes makes pytest fail on Amir's machine. Plan files go to `logs/`, which is ignored. Options: ignore `terraform.tfvars`, or have the tests check `git ls-files`.
+
