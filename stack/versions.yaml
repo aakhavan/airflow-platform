@@ -31,6 +31,9 @@ terraform:                    # S7: modules and envs pin these; tests/test_terra
     hashicorp/aws:
       constraint: "~> 6.0"
       locked: 6.73.0          # .terraform.lock.hcl in the module and envs/aws, 2026-11-14
+    hashicorp/google:         # S8: scheduling.max_run_duration + instance_termination_action validate in the GA provider
+      constraint: "~> 7.0"
+      locked: 7.46.2          # .terraform.lock.hcl in the module and envs/gcp, 2026-11-14
 image_size:
   local_mb: 3078
   provider_layer_mb: 5

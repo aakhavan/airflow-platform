@@ -253,3 +253,40 @@ For Amir: Two things at the gate: (1) run `git -C ../governor-airflow status --s
 ## Additions for S6
 S6 (CI): tests/test_projects.py's two repo-registry assertions and tests/test_governor.py's page-name sub-check depend on ../governor-airflow existing; the latter skips, the former will fail in CI without the worktree (NOTES already flags it). Commit must git-add the untracked docs/projects/ and tests/test_governor.py. stack/.env.example values are now double-quoted (compose strips them; tests strip them too). url_template placeholders are run_id, run_id_safe, dag_id, task_id in projects.py, views.py and the plugin copy (keep identical; test_plugin_copy_matches_views_module). accept_s5 picks the first `docker volume ls` entry ending in governor-data; that is governor-airflow_governor-data by ASCII order, but a stale governor_governor-data volume from the earlier wrong-name run still exists and could be removed.
 
+## S6 result
+*CI for python and the local stack, 14 Nov 2026 00:50.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S6`.
+
+| check | ok | detail |
+|---|---|---|
+| workflow exists | yes |  |
+| python and stack jobs | yes |  |
+| no secrets referenced | yes |  |
+| actions pinned | yes | actions/checkout@v5,astral-sh/setup-uv@v6,actions/checkout@v5,astral-sh/setup-uv@v6,actions/upload-artifact@v4 |
+| ci registry has only examples | yes |  |
+| no secrets in repo files | yes |  |
+| ci-local.ps1 passes | yes | stack wait: {"dag_id": "hello_workload", "run_id": "manual__2026-11-13T23:37:21.341506+00:00", "state": "success", "time |
+| pytest tests | yes | 62 passed in 0.57s |
+| required tests present | yes | 4 found |
+
+Review: S6 matches the prompt. ci.yml (push, pull_request, ubuntu-latest, contents: read) has a python job (uv sync --frozen, pytest) and a stack job (up projects/ci.yaml, import_errors == 0, hello_workload success within 300s, logs on failure, always down -Volumes). Actions are checkout@v5, setup-uv@v6, upload-artifact@v4. No secrets. ci-local.ps1 ran that sequence on airflow_platform_ci:8081; acceptance showed success and volumes removed; 62 tests passed.
+
+For Amir: ci-local.ps1 always calls down -Volumes, but it still exits 0 if that call fails. This run's down JSON was ok true with volumes_removed true, and the workflow down step fails the GitHub job on a non-zero exit. The acceptance output does not show the dev stack still running on 8080 beside port 8081. GitHub Actions itself has not run.
+
+## S7 notes (implementer)
+- Terraform is not on PATH on this host, so `plan/accept/_tf.py` ran everything in `hashicorp/terraform:1.13` (Docker). `required_version = "~> 1.13.0"`, `hashicorp/aws ~> 6.0` (locked 6.73.0); both are in `stack/versions.yaml`. `mock_provider`, `override_data` and assertions on `local.*` work on 1.13.
+- **Acceptance blocker (needs a `plan/` fix):** fmt, init, validate (module + envs/aws), pytest (68 passed) and every static check pass, and `terraform test` prints `Success! 3 passed, 0 failed.`. But `_tf.py` line 32 fails the check because the text after the last "success" contains "fail" ("0 failed"), which Terraform always prints. Suggested fix: `re.search(r"(\d+) passed, 0 failed", r.stdout)`. I did not work around it.
+- Secret names (default): `AIRFLOW__API_AUTH__JWT_SECRET`, `FERNET_KEY`, `_AIRFLOW_WWW_USER_PASSWORD`, the three stack/.env values that must not keep local defaults on a VM. Slots are `<name>/<KEY>` (`airflow-platform/<KEY>` by default). A slot with no value is skipped at boot and that key keeps the stack default, so a smoke test works with empty slots.
+- The template takes one variable beyond the S7 list, `secret_prefix`. S8 must pass it; GCP slots are `<prefix>-<KEY>` because GCP secret IDs can't contain `/`.
+- `AIRFLOW__SECRETS__BACKEND(_KWARGS)` is written to stack/.env (compose passes .env through `env_file`) with every prefix set to `null`. The role may read only its own slots, so Airflow lookups under `connections/`/`variables/` prefixes would be denied. Turning the prefixes on needs a wider policy, which is a human decision.
+- In cloud-init the TTL `shutdown -h +N` runs first, not last, so a failed boot still terminates. `secret_recovery_window_days` (default 7, 0 for smoke) was added so re-applying after a destroy doesn't hit "scheduled for deletion". IMDS hop limit is 2, so containers can reach the role. `ignore_changes = [ami]`.
+- `*.tfvars` is not in `.gitignore` (outside S7 paths); `test_no_tfvars_committed` guards it instead.
+
+## Additions for S7
+S7 is the AWS Terraform module and mock-provider tests. Leave .github/workflows/ci.yml without a terraform job and without secrets; the terraform job arrives in S9, and permissions stay contents: read. Pytest on a runner has no ../governor-airflow checkout: test_projects.py expects the repo registry to fail only on governor's missing dags.local, and test_governor.py skips only the Streamlit page-name check. The stack job renders projects/ci.yaml (examples only). Every python -m airflow_platform.stack subcommand takes --compose-project (default airflow_platform) and --port (AIRFLOW_PORT from stack/.env, else 8080). Any other compose project writes its generated env and override under logs/<project>/, not into stack/. The workflow has not executed on GitHub; scripts/ci-local.ps1 is the run that passed.
+
+- 14 Nov 01:01 (Claude via chat): S7 secret_in_diff false positive on .terraform.lock.hcl provider hashes; added .terraform.lock.hcl to the factory scanner lockfile list (factory repo, uncommitted). resume.
+
+- 14 Nov 01:34 (Claude via chat): S7 loops_exhausted was an acceptance bug: _tf.py matched "fail" in "0 failed". Now parses "N passed, M failed". relock_resume.
+

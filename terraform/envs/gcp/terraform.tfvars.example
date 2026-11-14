@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars and never commit it (tests/test_terraform.py fails on any *.tfvars). No secret values belong here:
+# after apply, add a version to each secret named in the secret_names output (console or gcloud secrets versions add).
+project_id      = "<your-project-id>"
+region          = "europe-west3"
+zone            = "europe-west3-a"
+name            = "airflow-platform"
+machine_type    = "e2-medium"
+network         = "default"
+create_nat      = true # false if the network already has a Cloud NAT in this region
+repo_url        = "https://github.com/<you>/airflow-platform.git"
+repo_ref        = "main"
+ttl_minutes     = 0
+enable_registry = false
+labels = {
+  owner = "<you>"
+}

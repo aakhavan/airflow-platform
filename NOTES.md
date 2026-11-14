@@ -1,7 +1,7 @@
 # NOTES
 
 ## Current state
-S7 adds the AWS Terraform module terraform/modules/airflow-vm-aws, the env root terraform/envs/aws (no backend, only terraform.tfvars.example), and the shared cloud-init template. A t3.medium Ubuntu 24.04 VM (AMI from the Canonical SSM parameter, gp3 30 GB encrypted) has no ingress, IMDSv2 required, an SSM instance profile, and empty Secrets Manager slots for AIRFLOW__API_AUTH__JWT_SECRET, FERNET_KEY and _AIRFLOW_WWW_USER_PASSWORD. The role may call GetSecretValue only on those ARNs. ECR exists only when enable_registry is true. ttl_minutes 0 stops on shutdown; a positive TTL terminates and cloud-init runs shutdown -h +N. Versions are Terraform ~> 1.13.0 and hashicorp/aws ~> 6.0 (locked 6.73.0). Acceptance passed with mock-provider plan tests (3 passed) and pytest (68 passed). Terraform is not on PATH; checks used hashicorp/terraform:1.13.
+S8 adds terraform/modules/airflow-vm-gcp and terraform/envs/gcp (no backend block, only terraform.tfvars.example). The VM is e2-medium, Ubuntu 24.04, pd-balanced 30 GB, Shielded VM, with no external IP. Ingress from this module is tcp 22 and 8080 from 35.235.240.0/20 to the instance tag. Egress uses Cloud NAT when create_nat is true (the default). The service account has roles/secretmanager.secretAccessor on empty slots named <name>-<KEY> (default prefix airflow-platform) and, only if enable_registry is true, roles/artifactregistry.reader on that repository. ttl_minutes 0 leaves the scheduling block off; a positive value sets max_run_duration to ttl*60 seconds, provisioning_model STANDARD and instance_termination_action DELETE. The shared cloud-init template is rendered with cloud=gcp and runs shutdown -h +N only when the TTL is positive. Pins are Terraform ~> 1.13.0 and hashicorp/google ~> 7.0, locked at 7.46.2. Acceptance passed: GCP mock plans 4 passed, AWS 3 passed, pytest 74 passed, using hashicorp/terraform:1.13 because Terraform is not on PATH.
 
 ## Open questions
 - S1 verify (auth manager): the official 3.3.2 compose file uses the **FAB auth manager** (`airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager`), not Simple as spec §4 assumed. Its documented local admin login is `_AIRFLOW_WWW_USER_USERNAME` / `_AIRFLOW_WWW_USER_PASSWORD` = airflow / airflow, created by airflow-init. We kept FAB.
@@ -24,43 +24,6 @@ S7 adds the AWS Terraform module terraform/modules/airflow-vm-aws, the env root 
 - 13 Nov 21:07 (Claude via chat): S10 prompt gains a short "Configuration and secrets" README section (Amir asked). Needs relock.
 
 - 13 Nov 21:45 (Claude via chat): S5 verdict_stop fixed by hand: new {run_id_safe} placeholder (validator, views, plugin copy, test), governor link uses it, runbook gets --dsn and the worktree .env step, accept_s5 checks the link carries the file stem. relock_resume.
-
-## S6 result
-*CI for python and the local stack, 14 Nov 2026 00:50.*
-
-Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S6`.
-
-| check | ok | detail |
-|---|---|---|
-| workflow exists | yes |  |
-| python and stack jobs | yes |  |
-| no secrets referenced | yes |  |
-| actions pinned | yes | actions/checkout@v5,astral-sh/setup-uv@v6,actions/checkout@v5,astral-sh/setup-uv@v6,actions/upload-artifact@v4 |
-| ci registry has only examples | yes |  |
-| no secrets in repo files | yes |  |
-| ci-local.ps1 passes | yes | stack wait: {"dag_id": "hello_workload", "run_id": "manual__2026-11-13T23:37:21.341506+00:00", "state": "success", "time |
-| pytest tests | yes | 62 passed in 0.57s |
-| required tests present | yes | 4 found |
-
-Review: S6 matches the prompt. ci.yml (push, pull_request, ubuntu-latest, contents: read) has a python job (uv sync --frozen, pytest) and a stack job (up projects/ci.yaml, import_errors == 0, hello_workload success within 300s, logs on failure, always down -Volumes). Actions are checkout@v5, setup-uv@v6, upload-artifact@v4. No secrets. ci-local.ps1 ran that sequence on airflow_platform_ci:8081; acceptance showed success and volumes removed; 62 tests passed.
-
-For Amir: ci-local.ps1 always calls down -Volumes, but it still exits 0 if that call fails. This run's down JSON was ok true with volumes_removed true, and the workflow down step fails the GitHub job on a non-zero exit. The acceptance output does not show the dev stack still running on 8080 beside port 8081. GitHub Actions itself has not run.
-
-## S7 notes (implementer)
-- Terraform is not on PATH on this host, so `plan/accept/_tf.py` ran everything in `hashicorp/terraform:1.13` (Docker). `required_version = "~> 1.13.0"`, `hashicorp/aws ~> 6.0` (locked 6.73.0); both are in `stack/versions.yaml`. `mock_provider`, `override_data` and assertions on `local.*` work on 1.13.
-- **Acceptance blocker (needs a `plan/` fix):** fmt, init, validate (module + envs/aws), pytest (68 passed) and every static check pass, and `terraform test` prints `Success! 3 passed, 0 failed.`. But `_tf.py` line 32 fails the check because the text after the last "success" contains "fail" ("0 failed"), which Terraform always prints. Suggested fix: `re.search(r"(\d+) passed, 0 failed", r.stdout)`. I did not work around it.
-- Secret names (default): `AIRFLOW__API_AUTH__JWT_SECRET`, `FERNET_KEY`, `_AIRFLOW_WWW_USER_PASSWORD`, the three stack/.env values that must not keep local defaults on a VM. Slots are `<name>/<KEY>` (`airflow-platform/<KEY>` by default). A slot with no value is skipped at boot and that key keeps the stack default, so a smoke test works with empty slots.
-- The template takes one variable beyond the S7 list, `secret_prefix`. S8 must pass it; GCP slots are `<prefix>-<KEY>` because GCP secret IDs can't contain `/`.
-- `AIRFLOW__SECRETS__BACKEND(_KWARGS)` is written to stack/.env (compose passes .env through `env_file`) with every prefix set to `null`. The role may read only its own slots, so Airflow lookups under `connections/`/`variables/` prefixes would be denied. Turning the prefixes on needs a wider policy, which is a human decision.
-- In cloud-init the TTL `shutdown -h +N` runs first, not last, so a failed boot still terminates. `secret_recovery_window_days` (default 7, 0 for smoke) was added so re-applying after a destroy doesn't hit "scheduled for deletion". IMDS hop limit is 2, so containers can reach the role. `ignore_changes = [ami]`.
-- `*.tfvars` is not in `.gitignore` (outside S7 paths); `test_no_tfvars_committed` guards it instead.
-
-## Additions for S7
-S7 is the AWS Terraform module and mock-provider tests. Leave .github/workflows/ci.yml without a terraform job and without secrets; the terraform job arrives in S9, and permissions stay contents: read. Pytest on a runner has no ../governor-airflow checkout: test_projects.py expects the repo registry to fail only on governor's missing dags.local, and test_governor.py skips only the Streamlit page-name check. The stack job renders projects/ci.yaml (examples only). Every python -m airflow_platform.stack subcommand takes --compose-project (default airflow_platform) and --port (AIRFLOW_PORT from stack/.env, else 8080). Any other compose project writes its generated env and override under logs/<project>/, not into stack/. The workflow has not executed on GitHub; scripts/ci-local.ps1 is the run that passed.
-
-- 14 Nov 01:01 (Claude via chat): S7 secret_in_diff false positive on .terraform.lock.hcl provider hashes; added .terraform.lock.hcl to the factory scanner lockfile list (factory repo, uncommitted). resume.
-
-- 14 Nov 01:34 (Claude via chat): S7 loops_exhausted was an acceptance bug: _tf.py matched "fail" in "0 failed". Now parses "N passed, M failed". relock_resume.
 
 ## S7 result
 *Terraform module for AWS, tested with mock providers, 14 Nov 2026 01:44.*
@@ -94,3 +57,54 @@ For Amir: Static acceptance checks are keyword scans (the ingress check splits o
 
 ## Additions for S8
 S8 reuses terraform/templates/cloud-init.yaml.tftpl. Pass secret_prefix (extra variable beyond the S7 list): GCP secret ids are <prefix>-<KEY> because ids cannot contain '/'; AWS slots are <prefix>/<KEY>. Also pass cloud=gcp, region, repo_url, repo_ref, secret_names, ttl_minutes. Default secret names are AIRFLOW__API_AUTH__JWT_SECRET, FERNET_KEY, _AIRFLOW_WWW_USER_PASSWORD. The template appends AIRFLOW__SECRETS__BACKEND and BACKEND_KWARGS with every prefix null, so the identity is not asked to read connections/ or variables/ paths; bind secretAccessor only to the module's own secrets. Do not fork the template. Boot command is uv run python -m airflow_platform.stack up --projects projects/ci.yaml (up has no --target; it renders local bundles). TTL shutdown is the first runcmd so a failed boot still powers off. Pin required_version ~> 1.13.0 and the google provider in stack/versions.yaml and versions.tf; Terraform is not on PATH, so acceptance uses docker image hashicorp/terraform:1.13. Same file layout as the AWS module: mock_provider, command = plan, a second run with ttl_minutes=90 and enable_registry=true, expect_failures for a too-small machine type. envs/gcp gets no backend block and only terraform.tfvars.example. Copy .terraform.lock.hcl by running init. AWS-only details to leave behind: secret_recovery_window_days, IMDS hop limit 2, instance_initiated_shutdown_behavior.
+
+## S8 notes (implementer)
+- Module `terraform/modules/airflow-vm-gcp`, env `terraform/envs/gcp` (no backend, only `terraform.tfvars.example`), lock files from `init`. Versions: Terraform `~> 1.13.0`, `hashicorp/google ~> 7.0` (locked 7.46.2), recorded in `stack/versions.yaml`.
+- Verify (provider version): WebFetch of the provider changelog was denied, so I didn't read the release that added these fields. `scheduling { provisioning_model = "STANDARD", instance_termination_action = "DELETE", max_run_duration { seconds } }` passes `terraform validate` against the GA `hashicorp/google` 7.46.2 schema, and the TTL plan run asserts 5400 s and DELETE. So 7.x supports both fields. I didn't look for the earliest version that does.
+- VM: e2-medium (allowlist of >= 4 GB types, `e2-small` rejected by `expect_failures`), image family `ubuntu-os-cloud/ubuntu-2404-lts-amd64` (`ignore_changes` on it), pd-balanced 30 GB, Shielded VM (secure boot, vTPM, integrity), no public address block, OS Login on, project SSH keys blocked, cloud-init via the `user-data` metadata key. The shared template is unchanged (its `gcp` branch existed since S7).
+- Secrets: `google_secret_manager_secret` `<name>-<KEY>` with auto replication and no versions; `roles/secretmanager.secretAccessor` bound per secret to the module's service account only (no project IAM). With the registry on, the SA gets `artifactregistry.reader` on that repo only.
+- Firewall `<name>-allow-iap`: INGRESS, source `35.235.240.0/20` only, tcp 22 and 8080, target tag `<name>` (the instance's tag).
+- Cloud NAT cost: about $0.0014/h per VM (~$0.03/day) plus $0.045/GB processed. A first boot pulls a few GB of images, so expect ~$0.10-0.20 per boot. That's above "a few cents a day" once data is counted, so `create_nat` (default true) is a variable: set it to false when the network already has a NAT in the region. Router and NAT are `<name>-router`/`<name>-nat` on `var.network`.
+- TTL: the GCE scheduling deletes the VM `ttl_minutes` after it starts. The template's `shutdown -h +N` starts a little later (when cloud-init runs), so the delete normally wins; if the OS shutdown ever fires first, the VM is only stopped (no compute charge, disk remains) until someone deletes it.
+- `name` is limited to 6-28 chars because it is also the service account ID (6-30).
+- Not done here (S9 or a human): enabling the compute, secretmanager, iap and artifactregistry APIs, and granting the human `iap.tunnelResourceAccessor`. `tunnel_command` output: `gcloud compute start-iap-tunnel <name> 8080 --local-host-port=localhost:8080 --zone <zone> --project <project>`.
+- Tests: `tests/test_terraform.py` now covers both modules (template wiring and version pins parametrized per cloud, same env shape) plus `test_gcp_module_has_no_external_ip_block` and `test_gcp_module_wiring`. pytest 74 passed. `terraform test`: GCP 4 passed (defaults, ttl_and_registry, no_nat, rejects_small_machine), AWS 3 passed.
+
+## S8 result
+*Terraform module for GCP, tested with mock providers, 14 Nov 2026 02:03.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 0 fix loop(s); branch `factory/S8`.
+
+| check | ok | detail |
+|---|---|---|
+| IAP range only | yes |  |
+| no external IP | yes |  |
+| TTL scheduling | yes |  |
+| Shielded VM | yes |  |
+| registry behind enable_registry | yes |  |
+| no secret versions created | yes |  |
+| one shared cloud-init template | yes |  |
+| no secrets in repo files | yes |  |
+| terraform fmt | yes |  |
+| init terraform/modules/airflow-vm-gcp | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/modules/airflow-vm-gcp | yes | Success! The configuration is valid. |
+| init terraform/envs/gcp | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/envs/gcp | yes | Success! The configuration is valid. |
+| terraform test terraform/modules/airflow-vm-gcp | yes | tests/main.tftest.hcl... pass |  | Success! 4 passed, 0 failed. |
+| terraform/modules/airflow-vm-gcp has a test file | yes |  |
+| terraform fmt | yes |  |
+| init terraform/modules/airflow-vm-aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/modules/airflow-vm-aws | yes | Success! The configuration is valid. |
+| init terraform/envs/aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/envs/aws | yes | Success! The configuration is valid. |
+| terraform test terraform/modules/airflow-vm-aws | yes | tests/main.tftest.hcl... pass |  | Success! 3 passed, 0 failed. |
+| terraform/modules/airflow-vm-aws has a test file | yes |  |
+| pytest tests | yes | 74 passed in 0.65s |
+| required tests present | yes | 1 found |
+
+Review: S8 matches the prompt and spec §9. terraform test: 4 mock plans passed; pytest 74 passed. Firewall sources are only 35.235.240.0/20 on tcp 22/8080 to the instance tag; no access_config; Shielded VM on; secretAccessor per slot on this SA only; no secret version. ttl>0 sets max_run_duration and DELETE (5400s at 90). Registry count follows enable_registry (default false). One shared cloud-init, cloud=gcp, slots name-KEY. google ~> 7.0 locked 7.46.2.
+
+For Amir: On network=default, default-allow-ssh still allows tcp/22 from 0.0.0.0/0 to every instance; this module only adds an IAP allow, so port 22 stays open and port 8080 does not. accept_s8.py fails if main.tf contains 0.0.0.0/0, so a deny rule cannot be added in this step. Plan asserts check the secretAccessor role and secret id; main.tf binds the module service account. Cloud NAT uses ALL_SUBNETWORKS in the region. The provider changelog was not fetched; validate against GA provider 7.46.2 passed.
+
+## Additions for S9
+S9 adds plan.ps1, smoke.ps1, tunnel.ps1 and remote-state.ps1, each with -Target aws|gcp and -WhatIf, and never printing secret values, plus the terraform CI job (fmt, init -backend=false, validate, tflint, terraform test; no cloud credentials). GCP output tunnel_command is: gcloud compute start-iap-tunnel <name> 8080 --local-host-port=localhost:8080 --zone <zone> --project <project>. The module does not enable compute, secretmanager, iap or artifactregistry, and does not grant the caller iap.tunnelResourceAccessor. Secret ids are <name>-<KEY>; add versions by hand after apply. create_nat defaults to true and covers every subnet in the region; set false when a NAT is already there. A positive ttl_minutes deletes the VM via max_run_duration and cloud-init also schedules shutdown -h +N first. enable_registry defaults false. name must be 6-28 lowercase characters (it is the service account id). envs/gcp has no backend; remote-state.ps1 writes backend.tf. OS Login is enabled and project-wide SSH keys are blocked. Keep terraform/templates/cloud-init.yaml.tftpl shared. Terraform is not on PATH; use docker image hashicorp/terraform:1.13. Pins: ~> 1.13.0 and hashicorp/google ~> 7.0 locked at 7.46.2. The default network's default-allow-ssh still admits tcp/22 from 0.0.0.0/0; the UI is the IAP allow on tcp/8080.
