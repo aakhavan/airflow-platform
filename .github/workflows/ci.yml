@@ -64,3 +64,39 @@ jobs:
       - name: Down (with volumes)
         if: always()
         run: ./scripts/down.ps1 -Volumes
+
+  # Static Terraform checks and mock-provider tests only: no backend, no credentials, nothing is planned
+  # against a real cloud.
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13.0"
+          terraform_wrapper: false
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Validate envs
+        run: |
+          for env in envs/aws envs/gcp; do
+            terraform -chdir="$env" init -backend=false -input=false
+            terraform -chdir="$env" validate
+          done
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.58.0
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive
+      - name: Module tests (mock providers)
+        run: |
+          for mod in modules/airflow-vm-aws modules/airflow-vm-gcp; do
+            terraform -chdir="$mod" init -backend=false -input=false
+            terraform -chdir="$mod" test
+          done

@@ -160,6 +160,20 @@ def status_line(services: dict[str, str], airflow_version: str, url: str, mem_mb
     return {"up": up, "services": services, "airflow_version": airflow_version, "url": url, "mem_mb": int(mem_mb)}
 
 
+REQUIRED_COMPONENTS = ("metadatabase", "scheduler")
+
+
+def remote_status_line(health: dict, airflow_version: str, url: str) -> dict:
+    """Status of a stack seen only over HTTP (a tunnel), from GET /api/v2/monitor/health.
+    Up when the metadatabase and the scheduler are healthy and no reported component is unhealthy."""
+    services = {name: str((value or {}).get("status") or "unknown") for name, value in (health or {}).items()
+                if isinstance(value, dict)}
+    up = all(services.get(c) == "healthy" for c in REQUIRED_COMPONENTS) and \
+        all(v == "healthy" for v in services.values())
+    return {"up": up, "services": services, "airflow_version": airflow_version, "url": url, "mem_mb": 0,
+            "remote": True}
+
+
 def env_value(env_text: str, name: str, default: str) -> str:
     for line in env_text.splitlines():
         if line.strip().startswith(f"{name}="):
@@ -353,7 +367,35 @@ def import_errors() -> int:
     return count_import_errors(r.stdout) if r.returncode == 0 else -1
 
 
+def remote_status(url: str, dags: bool) -> dict:
+    """`status --url`: a stack reached through a tunnel, so no docker calls; health route is public."""
+    base = base_url(url)
+    try:
+        health = _http("GET", f"{base}/api/v2/monitor/health", timeout=15)
+    except (RuntimeError, OSError, ValueError) as exc:
+        return {"up": False, "services": {}, "airflow_version": "", "url": base, "mem_mb": 0, "remote": True,
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    version, api = "", None
+    try:
+        api = Api(base)
+        version = str(api.call("GET", "/version").get("version") or "")
+    except (RuntimeError, OSError, ValueError, KeyError):
+        pass
+    line = remote_status_line(health, version, base)
+    if dags:
+        try:
+            found = list_dags(base)
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            found = {}
+            line["dags_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        line["dag_ids"] = sorted(found)
+        line["dag_bundles"] = dict(sorted(found.items()))
+    return line
+
+
 def cmd_status(args) -> dict:
+    if getattr(args, "url", None):
+        return remote_status(args.url, args.dags)
     ensure_env()
     port = _port()
     ps = _run(_compose() + ["ps", "-a", "--format", "json"], timeout=60)
@@ -519,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     links.add_argument("task_id")
     for sp in (trig, wait, logs, plug, links):
         sp.add_argument("--url", default=None, help="Airflow base URL (default http://localhost:<port>)")
+    status.add_argument("--url", default=None,
+                        help="check a stack over HTTP only (e.g. a tunnel to a VM): /api/v2/monitor/health, no docker")
     clogs = sub.add_parser("compose-logs", help="write `docker compose logs` to logs/compose-<project>.log")
     for sp in (up, down, status, rend, trig, wait, logs, plug, links, clogs):
         sp.add_argument("--compose-project", type=compose_project, default=PROJECT,
