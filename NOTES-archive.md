@@ -215,3 +215,41 @@ S5 replaces the examples view/task_link in projects/projects.yaml with governor'
 ## S5 blocked: preconditions
 `accept_s5` fails only its preconditions: the governor api (8000/health) and ui (8501/_stcore/health) are not running. The worktree, `governor:local` and the test bed on 55432 are fine. The live part (trigger, profile file, link 200) did not run. I may not start governor containers, so that is for Amir: `docker compose up -d --wait` in `../governor-airflow`, then rerun `uv run python plan/accept/accept_s5.py`.
 
+## Relocks
+- 14 Nov 2026 01:33: acceptance bug: terraform test check matched 'fail' in '0 failed'; now parses the counts (via supervise, by Claude via chat (delegated by Amir)) (changed: plan/accept/_tf.py)
+
+## S5 result
+*Governor as the first project, end to end, 14 Nov 2026 00:27.*
+
+Implementer `claude-tc-opus`; reviewers `claude-tc-fable`: pass, `cursor-grok`: pass; 2 fix loop(s); branch `factory/S5`.
+
+| check | ok | detail |
+|---|---|---|
+| governor worktree exists | yes | C:\Users\amir0\portfolio\governor-airflow |
+| governor:local image exists | yes | sha256:db07b35c5092cf0d2059021b97141f028c434af68e9f79ab984abade1228b56e |
+| governor test bed up on 55432 | yes | testbed-postgres-1 |
+| governor api healthy | yes |  |
+| governor ui up | yes |  |
+| governor in registry | yes |  |
+| governor view + link | yes |  |
+| runbook exists | yes |  |
+| no secrets in repo files | yes |  |
+| stack up with governor | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples", "governor"], "workloads": ["airflow-platfor |
+| trigger governor_profile_raw | yes | manual__2026-11-13T20:56:29.520836+00:00 |
+| governor_profile_raw run succeeded | yes | {'dag_id': 'governor_profile_raw', 'run_id': 'manual__2026-11-13T20:56:29.520836+00:00', 'state': 'success', 'timed_out' |
+| profile file written to governor volume | yes | governor-airflow_governor-data T20_41_50.106172+00_00.json
+manual__2026-11-13T20_54_34.089290+00_00.json
+manual__2026-11 |
+| task link points at the governor UI | yes | {'links': {'Open report': 'http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00'}, 'source': |
+| task link carries the profile's file-safe run id | yes | http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00 |
+| report link answers 200 | yes | http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00 |
+| pytest tests | yes | 40 passed in 0.44s |
+| required tests present | yes | 4 found |
+
+Review: claude-tc-fable: pass | cursor-grok: pass
+
+For Amir: Two things at the gate: (1) run `git -C ../governor-airflow status --short` and `git -C ../governor status --short` yourself; the reviewer sandbox blocked those calls, so 'nothing changed there' rests on indirect evidence. (2) The A1 commit is on factory/A1, not airflow-integration; fast-forward airflow-integration before merging to main, or the runbook's 'after the merge' section points at a branch without the DAG.
+
+## Additions for S6
+S6 (CI): tests/test_projects.py's two repo-registry assertions and tests/test_governor.py's page-name sub-check depend on ../governor-airflow existing; the latter skips, the former will fail in CI without the worktree (NOTES already flags it). Commit must git-add the untracked docs/projects/ and tests/test_governor.py. stack/.env.example values are now double-quoted (compose strips them; tests strip them too). url_template placeholders are run_id, run_id_safe, dag_id, task_id in projects.py, views.py and the plugin copy (keep identical; test_plugin_copy_matches_views_module). accept_s5 picks the first `docker volume ls` entry ending in governor-data; that is governor-airflow_governor-data by ASCII order, but a stale governor_governor-data volume from the earlier wrong-name run still exists and could be removed.
+

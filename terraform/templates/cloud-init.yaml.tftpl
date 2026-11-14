@@ -1,0 +1,90 @@
+#cloud-config
+# Shared by modules/airflow-vm-aws (S7) and modules/airflow-vm-gcp (S8), rendered with templatefile().
+# Template variables: repo_url, repo_ref, cloud (aws|gcp), secret_names (list of stack/.env keys),
+# secret_prefix, ttl_minutes, region. It carries secret NAMES only: every value is read at boot
+# from the cloud's secret store by the VM's own identity, never from Terraform.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+
+write_files:
+  - path: /usr/local/sbin/airflow-platform-boot.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec >>/var/log/airflow-platform-boot.log 2>&1
+      export HOME=/root DEBIAN_FRONTEND=noninteractive
+      CLOUD="${cloud}"
+      REGION="${region}"
+      SECRET_PREFIX="${secret_prefix}"
+      SECRET_NAMES=(${join(" ", secret_names)})
+      APP=/opt/airflow-platform
+
+      # 1. Docker Engine + compose plugin from Docker's official apt repo, uv, and the cloud CLI.
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update -q
+      apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable --now docker
+      curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+      case "$CLOUD" in
+        aws) command -v aws >/dev/null || snap install aws-cli --classic ;;
+        gcp) command -v gcloud >/dev/null || snap install google-cloud-cli --classic ;;
+        *) echo "unknown cloud: $CLOUD"; exit 1 ;;
+      esac
+
+      # 2. The repo at the pinned ref (branch, tag or commit).
+      [ -d "$APP/.git" ] || git clone "${repo_url}" "$APP"
+      git -C "$APP" fetch --depth 1 origin "${repo_ref}"
+      git -C "$APP" checkout --detach FETCH_HEAD
+      cd "$APP"
+
+      # 3. stack/.env = the local example, with each secret key replaced by the value of its slot.
+      #    Slot name: <prefix>/<KEY> on AWS, <prefix>-<KEY> on GCP. Values are never printed.
+      ENV_FILE=stack/.env
+      cp stack/.env.example "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+      fetch() {
+        case "$CLOUD" in
+          aws) aws secretsmanager get-secret-value --region "$REGION" --secret-id "$SECRET_PREFIX/$1" \
+                 --query SecretString --output text ;;
+          gcp) gcloud secrets versions access latest --secret="$SECRET_PREFIX-$1" --quiet ;;
+        esac
+      }
+      for key in "$${SECRET_NAMES[@]}"; do
+        if value="$(fetch "$key")" && [ -n "$value" ] && [ "$value" != "None" ]; then
+          sed -i "/^$key=/d" "$ENV_FILE"
+          printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+        else
+          echo "slot for $key has no value yet; the stack default stays"
+        fi
+      done
+      unset value
+      case "$CLOUD" in
+        aws)
+          echo 'AIRFLOW__SECRETS__BACKEND=airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend'
+          echo "AIRFLOW__SECRETS__BACKEND_KWARGS={\"connections_prefix\": null, \"variables_prefix\": null, \"config_prefix\": null, \"region_name\": \"$REGION\"}"
+          ;;
+        gcp)
+          echo 'AIRFLOW__SECRETS__BACKEND=airflow.providers.google.cloud.secrets.secret_manager.CloudSecretManagerBackend'
+          echo 'AIRFLOW__SECRETS__BACKEND_KWARGS={"connections_prefix": null, "variables_prefix": null, "config_prefix": null}'
+          ;;
+      esac >> "$ENV_FILE"
+
+      # 4. The same stack as the laptop, with the examples-only registry.
+      uv run python -m airflow_platform.stack up --projects projects/ci.yaml
+
+runcmd:
+%{ if ttl_minutes > 0 ~}
+  # 5. TTL. Scheduled first, so a failed boot still powers off (and terminates on AWS / deletes on GCP).
+  - shutdown -h +${ttl_minutes}
+%{ endif ~}
+  - /usr/local/sbin/airflow-platform-boot.sh

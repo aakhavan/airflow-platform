@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and never commit it (tests/test_terraform.py fails on any *.tfvars). No secret values belong here:
+# after apply, put each value into the slot named in the secret_names output (console or aws CLI).
+region          = "eu-central-1"
+name            = "airflow-platform"
+instance_type   = "t3.medium"
+repo_url        = "https://github.com/<you>/airflow-platform.git"
+repo_ref        = "main"
+ttl_minutes     = 0
+enable_registry = false
+# subnet_id = "subnet-..."   # omit for the default VPC
+# secret_recovery_window_days = 0   # smoke tests only
+tags = {
+  owner = "<you>"
+}

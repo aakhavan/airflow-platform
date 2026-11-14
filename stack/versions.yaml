@@ -24,6 +24,13 @@ providers:                    # pinned by the constraints file above
 # All five providers are already preinstalled in the base image at these exact versions, so the
 # provider layer adds only ~5 MB. Amazon and google are not what makes the image heavy, and a
 # CLOUD_PROVIDERS build switch would save nothing; the size is the official base image.
+terraform:                    # S7: modules and envs pin these; tests/test_terraform.py keeps them in sync
+  required_version: "~> 1.13.0"
+  docker_image: hashicorp/terraform:1.13   # used by plan/accept/_tf.py when terraform is not on PATH
+  providers:
+    hashicorp/aws:
+      constraint: "~> 6.0"
+      locked: 6.73.0          # .terraform.lock.hcl in the module and envs/aws, 2026-11-14
 image_size:
   local_mb: 3078
   provider_layer_mb: 5

@@ -1,7 +1,7 @@
 # NOTES
 
 ## Current state
-S0 through S5 are done, including the governor end-to-end run. S6 adds CI for the offline tests and the local stack: .github/workflows/ci.yml, the examples-only projects/ci.yaml, and scripts/ci-local.ps1. The python job runs uv sync --frozen and pytest. The stack job starts that registry, requires zero DAG import errors, runs hello_workload to success, uploads compose logs on failure, and always removes volumes. ci-local.ps1 repeats that sequence as compose project airflow_platform_ci on port 8081, so the dev project's generated files in stack/ stay untouched. stack.py takes --compose-project and --port on every subcommand, and wait exits non-zero unless the run state is success. Local acceptance passed (hello_workload success, CI volumes removed, 62 tests). GitHub has not run the workflow yet.
+S7 adds the AWS Terraform module terraform/modules/airflow-vm-aws, the env root terraform/envs/aws (no backend, only terraform.tfvars.example), and the shared cloud-init template. A t3.medium Ubuntu 24.04 VM (AMI from the Canonical SSM parameter, gp3 30 GB encrypted) has no ingress, IMDSv2 required, an SSM instance profile, and empty Secrets Manager slots for AIRFLOW__API_AUTH__JWT_SECRET, FERNET_KEY and _AIRFLOW_WWW_USER_PASSWORD. The role may call GetSecretValue only on those ARNs. ECR exists only when enable_registry is true. ttl_minutes 0 stops on shutdown; a positive TTL terminates and cloud-init runs shutdown -h +N. Versions are Terraform ~> 1.13.0 and hashicorp/aws ~> 6.0 (locked 6.73.0). Acceptance passed with mock-provider plan tests (3 passed) and pytest (68 passed). Terraform is not on PATH; checks used hashicorp/terraform:1.13.
 
 ## Open questions
 - S1 verify (auth manager): the official 3.3.2 compose file uses the **FAB auth manager** (`airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager`), not Simple as spec §4 assumed. Its documented local admin login is `_AIRFLOW_WWW_USER_USERNAME` / `_AIRFLOW_WWW_USER_PASSWORD` = airflow / airflow, created by airflow-init. We kept FAB.
@@ -25,41 +25,6 @@ S0 through S5 are done, including the governor end-to-end run. S6 adds CI for th
 
 - 13 Nov 21:45 (Claude via chat): S5 verdict_stop fixed by hand: new {run_id_safe} placeholder (validator, views, plugin copy, test), governor link uses it, runbook gets --dsn and the worktree .env step, accept_s5 checks the link carries the file stem. relock_resume.
 
-## S5 result
-*Governor as the first project, end to end, 14 Nov 2026 00:27.*
-
-Implementer `claude-tc-opus`; reviewers `claude-tc-fable`: pass, `cursor-grok`: pass; 2 fix loop(s); branch `factory/S5`.
-
-| check | ok | detail |
-|---|---|---|
-| governor worktree exists | yes | C:\Users\amir0\portfolio\governor-airflow |
-| governor:local image exists | yes | sha256:db07b35c5092cf0d2059021b97141f028c434af68e9f79ab984abade1228b56e |
-| governor test bed up on 55432 | yes | testbed-postgres-1 |
-| governor api healthy | yes |  |
-| governor ui up | yes |  |
-| governor in registry | yes |  |
-| governor view + link | yes |  |
-| runbook exists | yes |  |
-| no secrets in repo files | yes |  |
-| stack up with governor | yes | {"command": "up", "ok": true, "env_created": false, "projects": ["examples", "governor"], "workloads": ["airflow-platfor |
-| trigger governor_profile_raw | yes | manual__2026-11-13T20:56:29.520836+00:00 |
-| governor_profile_raw run succeeded | yes | {'dag_id': 'governor_profile_raw', 'run_id': 'manual__2026-11-13T20:56:29.520836+00:00', 'state': 'success', 'timed_out' |
-| profile file written to governor volume | yes | governor-airflow_governor-data T20_41_50.106172+00_00.json
-manual__2026-11-13T20_54_34.089290+00_00.json
-manual__2026-11 |
-| task link points at the governor UI | yes | {'links': {'Open report': 'http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00'}, 'source': |
-| task link carries the profile's file-safe run id | yes | http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00 |
-| report link answers 200 | yes | http://localhost:8501/Profiles?run_id=manual__2026-11-13T20_56_29.520836%2B00_00 |
-| pytest tests | yes | 40 passed in 0.44s |
-| required tests present | yes | 4 found |
-
-Review: claude-tc-fable: pass | cursor-grok: pass
-
-For Amir: Two things at the gate: (1) run `git -C ../governor-airflow status --short` and `git -C ../governor status --short` yourself; the reviewer sandbox blocked those calls, so 'nothing changed there' rests on indirect evidence. (2) The A1 commit is on factory/A1, not airflow-integration; fast-forward airflow-integration before merging to main, or the runbook's 'after the merge' section points at a branch without the DAG.
-
-## Additions for S6
-S6 (CI): tests/test_projects.py's two repo-registry assertions and tests/test_governor.py's page-name sub-check depend on ../governor-airflow existing; the latter skips, the former will fail in CI without the worktree (NOTES already flags it). Commit must git-add the untracked docs/projects/ and tests/test_governor.py. stack/.env.example values are now double-quoted (compose strips them; tests strip them too). url_template placeholders are run_id, run_id_safe, dag_id, task_id in projects.py, views.py and the plugin copy (keep identical; test_plugin_copy_matches_views_module). accept_s5 picks the first `docker volume ls` entry ending in governor-data; that is governor-airflow_governor-data by ASCII order, but a stale governor_governor-data volume from the earlier wrong-name run still exists and could be removed.
-
 ## S6 result
 *CI for python and the local stack, 14 Nov 2026 00:50.*
 
@@ -81,5 +46,51 @@ Review: S6 matches the prompt. ci.yml (push, pull_request, ubuntu-latest, conten
 
 For Amir: ci-local.ps1 always calls down -Volumes, but it still exits 0 if that call fails. This run's down JSON was ok true with volumes_removed true, and the workflow down step fails the GitHub job on a non-zero exit. The acceptance output does not show the dev stack still running on 8080 beside port 8081. GitHub Actions itself has not run.
 
+## S7 notes (implementer)
+- Terraform is not on PATH on this host, so `plan/accept/_tf.py` ran everything in `hashicorp/terraform:1.13` (Docker). `required_version = "~> 1.13.0"`, `hashicorp/aws ~> 6.0` (locked 6.73.0); both are in `stack/versions.yaml`. `mock_provider`, `override_data` and assertions on `local.*` work on 1.13.
+- **Acceptance blocker (needs a `plan/` fix):** fmt, init, validate (module + envs/aws), pytest (68 passed) and every static check pass, and `terraform test` prints `Success! 3 passed, 0 failed.`. But `_tf.py` line 32 fails the check because the text after the last "success" contains "fail" ("0 failed"), which Terraform always prints. Suggested fix: `re.search(r"(\d+) passed, 0 failed", r.stdout)`. I did not work around it.
+- Secret names (default): `AIRFLOW__API_AUTH__JWT_SECRET`, `FERNET_KEY`, `_AIRFLOW_WWW_USER_PASSWORD`, the three stack/.env values that must not keep local defaults on a VM. Slots are `<name>/<KEY>` (`airflow-platform/<KEY>` by default). A slot with no value is skipped at boot and that key keeps the stack default, so a smoke test works with empty slots.
+- The template takes one variable beyond the S7 list, `secret_prefix`. S8 must pass it; GCP slots are `<prefix>-<KEY>` because GCP secret IDs can't contain `/`.
+- `AIRFLOW__SECRETS__BACKEND(_KWARGS)` is written to stack/.env (compose passes .env through `env_file`) with every prefix set to `null`. The role may read only its own slots, so Airflow lookups under `connections/`/`variables/` prefixes would be denied. Turning the prefixes on needs a wider policy, which is a human decision.
+- In cloud-init the TTL `shutdown -h +N` runs first, not last, so a failed boot still terminates. `secret_recovery_window_days` (default 7, 0 for smoke) was added so re-applying after a destroy doesn't hit "scheduled for deletion". IMDS hop limit is 2, so containers can reach the role. `ignore_changes = [ami]`.
+- `*.tfvars` is not in `.gitignore` (outside S7 paths); `test_no_tfvars_committed` guards it instead.
+
 ## Additions for S7
 S7 is the AWS Terraform module and mock-provider tests. Leave .github/workflows/ci.yml without a terraform job and without secrets; the terraform job arrives in S9, and permissions stay contents: read. Pytest on a runner has no ../governor-airflow checkout: test_projects.py expects the repo registry to fail only on governor's missing dags.local, and test_governor.py skips only the Streamlit page-name check. The stack job renders projects/ci.yaml (examples only). Every python -m airflow_platform.stack subcommand takes --compose-project (default airflow_platform) and --port (AIRFLOW_PORT from stack/.env, else 8080). Any other compose project writes its generated env and override under logs/<project>/, not into stack/. The workflow has not executed on GitHub; scripts/ci-local.ps1 is the run that passed.
+
+- 14 Nov 01:01 (Claude via chat): S7 secret_in_diff false positive on .terraform.lock.hcl provider hashes; added .terraform.lock.hcl to the factory scanner lockfile list (factory repo, uncommitted). resume.
+
+- 14 Nov 01:34 (Claude via chat): S7 loops_exhausted was an acceptance bug: _tf.py matched "fail" in "0 failed". Now parses "N passed, M failed". relock_resume.
+
+## S7 result
+*Terraform module for AWS, tested with mock providers, 14 Nov 2026 01:44.*
+
+Implementer `claude-tc-opus`; reviewers `cursor-grok`: pass; 2 fix loop(s); branch `factory/S7`.
+
+| check | ok | detail |
+|---|---|---|
+| IMDSv2 required | yes |  |
+| no 0.0.0.0/0 ingress | yes |  |
+| TTL terminate wiring | yes |  |
+| registry behind enable_registry | yes |  |
+| no secret versions created | yes |  |
+| no tfvars committed | yes |  |
+| no backend block in envs/aws | yes |  |
+| shared cloud-init template | yes |  |
+| no secrets in repo files | yes |  |
+| terraform fmt | yes |  |
+| init terraform/modules/airflow-vm-aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/modules/airflow-vm-aws | yes | Success! The configuration is valid. |
+| init terraform/envs/aws | yes | If you ever set or change modules or backend configuration for Terraform, | rerun this command to reinitialize your work |
+| validate terraform/envs/aws | yes | Success! The configuration is valid. |
+| terraform test terraform/modules/airflow-vm-aws | yes | tests/main.tftest.hcl... pass |  | Success! 3 passed, 0 failed. |
+| terraform/modules/airflow-vm-aws has a test file | yes |  |
+| pytest tests | yes | 68 passed in 0.60s |
+| required tests present | yes | 4 found |
+
+Review: S7 matches the prompt and spec §9. Acceptance is trustworthy: terraform test ran 3 mock plan runs (3 passed) plus pytest. Ingress is empty, IMDSv2 is required, GetSecretValue covers only this module's secret ARNs, and no secret version exists. TTL uses terminate when ttl_minutes > 0 (else stop) and cloud-init adds shutdown -h +N only then. ECR count follows enable_registry, default false. No tfvars or backend is committed. templatefile passes names, prefix, repo, region and TTL, never secret values.
+
+For Amir: Static acceptance checks are keyword scans (the ingress check splits on the first occurrence of egress). The plan asserts in tests/main.tftest.hcl are the real evidence. Those asserts do not read the IAM policy document; the least-privilege statement is only in main.tf. Cloud-init sets the Airflow secrets backend with all prefixes null, so connection and variable lookups stay off until someone widens the policy. IPv6 egress ::/0 is set on the security group; a default VPC has no IPv6 CIDR, and this was not applied.
+
+## Additions for S8
+S8 reuses terraform/templates/cloud-init.yaml.tftpl. Pass secret_prefix (extra variable beyond the S7 list): GCP secret ids are <prefix>-<KEY> because ids cannot contain '/'; AWS slots are <prefix>/<KEY>. Also pass cloud=gcp, region, repo_url, repo_ref, secret_names, ttl_minutes. Default secret names are AIRFLOW__API_AUTH__JWT_SECRET, FERNET_KEY, _AIRFLOW_WWW_USER_PASSWORD. The template appends AIRFLOW__SECRETS__BACKEND and BACKEND_KWARGS with every prefix null, so the identity is not asked to read connections/ or variables/ paths; bind secretAccessor only to the module's own secrets. Do not fork the template. Boot command is uv run python -m airflow_platform.stack up --projects projects/ci.yaml (up has no --target; it renders local bundles). TTL shutdown is the first runcmd so a failed boot still powers off. Pin required_version ~> 1.13.0 and the google provider in stack/versions.yaml and versions.tf; Terraform is not on PATH, so acceptance uses docker image hashicorp/terraform:1.13. Same file layout as the AWS module: mock_provider, command = plan, a second run with ttl_minutes=90 and enable_registry=true, expect_failures for a too-small machine type. envs/gcp gets no backend block and only terraform.tfvars.example. Copy .terraform.lock.hcl by running init. AWS-only details to leave behind: secret_recovery_window_days, IMDS hop limit 2, instance_initiated_shutdown_behavior.

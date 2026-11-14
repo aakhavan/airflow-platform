@@ -1,5 +1,6 @@
 """Terraform helpers for S7-S9 acceptance: local terraform, else the pinned Docker image. Never touches a cloud."""
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -29,5 +30,6 @@ def module_checks(mod: str, env_dir: str) -> None:
             r = tf(["validate", "-no-color"], rel)
             check(f"validate {rel}", r.returncode == 0, tail(r))
     r = tf(["test", "-no-color"], mod, timeout=1200)
-    check(f"terraform test {mod}", r.returncode == 0 and "fail" not in r.stdout.lower().split("success")[-1], tail(r))
+    m = re.search(r"(\d+) passed, (\d+) failed", r.stdout)
+    check(f"terraform test {mod}", r.returncode == 0 and bool(m) and int(m.group(1)) > 0 and m.group(2) == "0", tail(r))
     check(f"{mod} has a test file", any((ROOT / mod / "tests").glob("*.tftest.hcl")))
